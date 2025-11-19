@@ -33,7 +33,7 @@ app.post('/webhook/fatura', async (req, res) => {
     try {
         // Inicia o browser (uma única vez para as tentativas)
         browser = await chromium.launch({
-            headless: true,
+            headless: false,
             args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
 
@@ -83,7 +83,7 @@ app.post('/webhook/fatura', async (req, res) => {
                 try {
                     // Espera aparecer algo que confirme o login ou redirecionamento
                     await Promise.race([
-                        page.locator('span').filter({ hasText: 'mov' }).first().waitFor({ state: 'visible', timeout: 60000 }),
+                        page.locator('span').filter({ hasText: 'mov' }).first().waitFor({ state: 'visible', timeout: 90000 }),
                         page.waitForURL(/sua-conta/, { timeout: 60000 })
                     ]);
                 } catch (e) {
@@ -151,118 +151,56 @@ app.post('/webhook/fatura', async (req, res) => {
                     if (await loader.isVisible({ timeout: 3000 })) await loader.waitFor({ state: 'hidden', timeout: 30000 });
                 } catch (e) { }
 
-                // --- PASSO 5: ALGORITMO DE DOWNLOAD HÍBRIDO ---
-                console.log("5. Iniciando estratégia de captura híbrida...");
+                // --- PASSO 5: ESTRATÉGIA "PRINT TO PDF" (Nativa do Navegador) ---
+                console.log("5. Iniciando geração de PDF (Simulando Impressão)...");
 
                 const btnVerFaturaModal = page.getByText('Ver Fatura');
-                // Aguarda o botão estar clicável
                 await btnVerFaturaModal.waitFor({ state: 'visible', timeout: 30000 });
 
-                // A. Listener de Rede (Prepara antes de clicar)
-                // Captura se o site enviar o PDF direto por stream/download
-                const responsePromise = context.waitForEvent('response', {
-                    predicate: response => {
-                        const headers = response.headers();
-                        const cType = (headers['content-type'] || '').toLowerCase();
-                        const cDisp = (headers['content-disposition'] || '').toLowerCase();
-
-                        // Critérios para identificar PDF
-                        const isPdfType = cType.includes('application/pdf') || cType.includes('application/octet-stream');
-                        const isPdfExt = response.url().toLowerCase().includes('.pdf');
-                        const isAttachment = cDisp.includes('attachment') && cDisp.includes('.pdf');
-
-                        return response.status() === 200 && (isPdfType || isPdfExt || isAttachment);
-                    },
-                    timeout: 20000 // 20s de tolerância para rede
-                }).catch(() => null); // Evita crash se der timeout
-
-                // B. Clicar e Capturar Popup
+                // 1. Abrir o Popup
                 console.log("   Clicando em 'Ver Fatura'...");
                 const [popup] = await Promise.all([
-                    page.waitForEvent('popup', { timeout: 30000 }),
+                    page.waitForEvent('popup', { timeout: 60000 }),
                     btnVerFaturaModal.click()
                 ]);
 
-                console.log("   Popup aberto. Verificando resposta de rede...");
+                console.log("   Popup aberto. Aguardando carregamento total...");
+
+                // 2. Garantir que a página carregou completamente (imagens, fontes, etc)
                 await popup.waitForLoadState('domcontentloaded');
+                await popup.waitForLoadState('networkidle'); // Espera o tráfego de rede parar (garante que a fatura renderizou)
 
-                // C. Executa Estratégia 1 (Rede)
-                let pdfBuffer = null;
-                const networkResponse = await responsePromise;
+                // Pausa de segurança para scripts de renderização visual terminarem
+                await sleep(3000);
 
-                if (networkResponse) {
-                    try {
-                        pdfBuffer = await networkResponse.body();
-                        if (pdfBuffer.length > 500) {
-                            console.log("   [SUCESSO] Arquivo capturado via Rede (Network Event)!");
-                        } else {
-                            console.log("   [AVISO] Resposta de rede muito pequena, tentando DOM...");
-                            pdfBuffer = null;
-                        }
-                    } catch (e) {
-                        console.log("   [ERRO] Falha ao ler body da rede: " + e.message);
-                    }
-                }
+                // 3. Forçar o modo de impressão (CSS de Print)
+                // Isso faz o site "pensar" que está sendo impresso, escondendo botões e menus automaticamente
+                await popup.emulateMedia({ media: 'print' });
 
-                // D. Executa Estratégia 2 (DOM Scraping - Fetch Interno)
-                if (!pdfBuffer) {
-                    console.log("   [FALLBACK] Rede falhou. Iniciando varredura do DOM no Popup...");
-                    await sleep(3000); // Tempo para o visualizador (Chrome ou PDF.js) carregar
+                // 4. Gerar o PDF (Equivalente ao "Salvar como PDF" do Chrome)
+                console.log("   Executando comando de impressão...");
+                const pdfBuffer = await popup.pdf({
+                    format: 'A4',           // Formato padrão
+                    printBackground: true,  // Importante para manter cores de fundo/cabeçalhos
+                    margin: {               // Margens mínimas para não cortar conteúdo
+                        top: '10mm',
+                        bottom: '10mm',
+                        left: '10mm',
+                        right: '10mm'
+                    },
+                    // scale: 0.9 // Se a fatura estiver cortando, descomente para reduzir um pouco o zoom
+                });
 
-                    // Script injetado no browser para baixar blobs ou embeds
-                    const base64Data = await popup.evaluate(async () => {
-                        const fetchAsBase64 = async (url) => {
-                            try {
-                                const response = await fetch(url);
-                                const blob = await response.blob();
-                                return new Promise((resolve) => {
-                                    const reader = new FileReader();
-                                    reader.onloadend = () => resolve(reader.result.split(',')[1]);
-                                    reader.readAsDataURL(blob);
-                                });
-                            } catch (err) { return null; }
-                        };
-
-                        // 1. URL da aba é um Blob ou PDF direto?
-                        if (window.location.href.startsWith('blob:') || window.location.href.endsWith('.pdf')) {
-                            return await fetchAsBase64(window.location.href);
-                        }
-
-                        // 2. Procura <embed> (Padrão Chrome)
-                        const embed = document.querySelector('embed[type="application/pdf"]');
-                        if (embed && embed.src) return await fetchAsBase64(embed.src);
-
-                        // 3. Procura <iframe>
-                        const iframe = document.querySelector('iframe');
-                        if (iframe && iframe.src && iframe.src.includes('.pdf')) return await fetchAsBase64(iframe.src);
-
-                        // 4. PDF.js Viewer
-                        // @ts-ignore
-                        if (window.PDFViewerApplication && window.PDFViewerApplication.url) {
-                            // @ts-ignore
-                            return await fetchAsBase64(window.PDFViewerApplication.url);
-                        }
-
-                        return null;
-                    });
-
-                    if (base64Data) {
-                        console.log("   [SUCESSO] Arquivo capturado via DOM Scraping!");
-                        pdfBuffer = Buffer.from(base64Data, 'base64');
-                    }
-                }
-
-                // Limpeza do Popup
+                // Limpeza
                 if (popup && !popup.isClosed()) await popup.close();
 
-                // Validação Final
-                if (!pdfBuffer || pdfBuffer.length < 500) {
-                    throw new Error("Falha crítica: Não foi possível capturar o binário do PDF.");
+                // Validação
+                if (!pdfBuffer || pdfBuffer.length < 1000) {
+                    throw new Error("O PDF gerado via impressão está vazio.");
                 }
 
-                // --- SUCESSO ---
                 const finalBase64 = pdfBuffer.toString('base64');
-                console.log(`>> Processo concluído. PDF gerado: ${pdfBuffer.length} bytes.`);
+                console.log(`>> Sucesso! PDF impresso com ${pdfBuffer.length} bytes.`);
 
                 await browser.close();
 
