@@ -43,7 +43,7 @@ app.post('/webhook/fatura', async (req, res) => {
 
                 context = await browser.newContext({ acceptDownloads: true });
                 page = await context.newPage();
-                page.setDefaultTimeout(90000);
+                page.setDefaultTimeout(120000); // 2 minutos de tolerância total
 
                 // 1. Acessa Home
                 console.log('Carregando portal...');
@@ -56,7 +56,7 @@ app.post('/webhook/fatura', async (req, res) => {
                     if (await btnFechar.isVisible({ timeout: 5000 })) await btnFechar.click();
 
                     const checkAviso = page.getByRole('checkbox', { name: 'Li e entendi o Aviso de' });
-                    if (await checkAviso.isVisible({ timeout: 3000 })) {
+                    if (await checkAviso.isVisible({ timeout: 5000 })) {
                         await checkAviso.check();
                         await page.getByRole('button', { name: 'Enviar' }).click();
                         await sleep(1000);
@@ -77,13 +77,13 @@ app.post('/webhook/fatura', async (req, res) => {
                 await sleep(500);
                 await page.getByRole('button', { name: 'Entrar' }).click();
 
-                // Validação "mov" com timeout estendido para evitar erro na tentativa 3
-                console.log('Validando acesso...');
+                // Validação "mov"
+                console.log('Validando acesso (Aguardando até 60s)...');
                 try {
-                    await page.locator('span').filter({ hasText: 'mov' }).first().waitFor({ state: 'visible', timeout: 40000 });
+                    await page.locator('span').filter({ hasText: 'mov' }).first().waitFor({ state: 'visible', timeout: 60000 });
                 } catch (e) {
-                    // Se falhar na validação, pode ser lentidão ou popup atrapalhando. Vamos tentar seguir se estiver na URL certa.
-                    if (!page.url().includes('sua-conta')) throw e;
+                    if (!page.url().includes('sua-conta')) throw new Error("Login demorou demais ou falhou.");
+                    console.log("Aviso: Validação visual falhou, mas URL parece correta. Prosseguindo...");
                 }
 
                 // 4. Navegação
@@ -94,7 +94,7 @@ app.post('/webhook/fatura', async (req, res) => {
                 // Termos internos
                 try {
                     const checkTermo = page.getByRole('checkbox', { name: 'Li e entendi o Aviso de' });
-                    if (await checkTermo.isVisible({ timeout: 3000 })) {
+                    if (await checkTermo.isVisible({ timeout: 5000 })) {
                         await checkTermo.check();
                         await page.getByRole('checkbox', { name: 'Concordo em disponibilizar' }).check();
                         await page.getByRole('button', { name: 'Enviar' }).click();
@@ -128,12 +128,12 @@ app.post('/webhook/fatura', async (req, res) => {
                     await sleep(4000);
                 }
 
-                // 8. Tabela e Modal
+                // 8. Tabela
                 console.log("Buscando fatura na tabela...");
                 const tbody = page.locator('#list-bills-segunda-via tbody');
                 const faturaRow = tbody.locator('tr').first();
 
-                if (!(await faturaRow.isVisible({ timeout: 10000 }))) {
+                if (!(await faturaRow.isVisible({ timeout: 15000 }))) {
                     console.log("Nenhuma fatura visível na lista.");
                     await browser.close();
                     return res.json({ status: 'success', message: 'Não existem faturas em aberto.', has_invoice: false });
@@ -145,51 +145,60 @@ app.post('/webhook/fatura', async (req, res) => {
                 console.log("1. Clicando no valor para abrir modal...");
                 await celulaValor.click();
 
-                // Espera "Aguarde"
+                // Monitoramento do "Aguarde"
+                console.log("2. Monitorando status do processamento...");
                 try {
                     const loaderAguarde = page.getByText('Aguarde');
                     if (await loaderAguarde.isVisible({ timeout: 5000 })) {
-                        console.log("   Aguardando sistema processar...");
+                        console.log("   Status: Processando (Aguarde visível)...");
                         await loaderAguarde.waitFor({ state: 'hidden', timeout: 60000 });
+                        console.log("   Status: Processamento concluído.");
                     }
-                    await sleep(1000);
                 } catch (e) { }
 
-                console.log("2. Procurando botão 'Ver Fatura'...");
+                console.log("3. Procurando botão 'Ver Fatura' (Timeout 60s)...");
                 const btnVerFaturaModal = page.getByText('Ver Fatura');
-                await btnVerFaturaModal.waitFor({ state: 'visible', timeout: 15000 });
 
-                // --- CORREÇÃO PRINCIPAL: INTERCEPTAÇÃO DE RESPOSTA ---
-                console.log("3. Preparando captura de tráfego PDF...");
+                try {
+                    await btnVerFaturaModal.waitFor({ state: 'visible', timeout: 60000 });
+                    console.log("   Botão encontrado!");
+                } catch (e) {
+                    throw new Error("O botão 'Ver Fatura' não apareceu após 60 segundos de espera.");
+                }
 
-                // Aqui criamos um "ouvinte" que espera pela resposta de rede contendo o PDF.
-                // Isso pega o arquivo NO MOMENTO que ele carrega, sem precisar baixar de novo.
-                const pdfResponsePromise = context.waitForResponse(response =>
-                    response.url().includes('exibir-faturas') &&
-                    response.status() === 200 &&
-                    (response.headers()['content-type'] === 'application/pdf' || response.headers()['content-type'] === 'application/octet-stream')
-                );
+                // --- CORREÇÃO: MONITORA A REDE GLOBALMENTE ---
+                console.log("4. Configurando interceptador de PDF...");
 
-                console.log("4. Clicando no botão final...");
+                // Usamos waitForEvent('response') no CONTEXTO. 
+                // Isso captura qualquer resposta de qualquer aba (inclusive a nova popup).
+                // Corrige o erro "context.waitForResponse is not a function".
+                const pdfPromise = context.waitForEvent('response', response => {
+                    const isPDF = response.headers()['content-type'] === 'application/pdf' ||
+                        response.headers()['content-type'] === 'application/octet-stream';
+                    const isCorrectURL = response.url().includes('exibir-faturas') || response.url().includes('.pdf');
 
-                // Clica no botão que dispara o popup e a requisição
-                const [popup] = await Promise.all([
-                    page.waitForEvent('popup'),
-                    btnVerFaturaModal.click()
-                ]);
+                    return response.status() === 200 && isPDF && isCorrectURL;
+                });
 
-                console.log(">> Popup aberto. Aguardando chegada dos dados de rede...");
+                console.log("5. Clicando no botão 'Ver Fatura'...");
 
-                // Espera a Promessa da resposta de rede ser cumprida
-                // (Se demorar mais que 30s, vai dar timeout e cair no catch para tentar de novo)
-                const responsePDF = await pdfResponsePromise;
+                // Não precisamos esperar a variável 'popup', apenas o evento de clique
+                // pois estamos vigiando a rede, não a janela.
+                await btnVerFaturaModal.click();
 
-                console.log(">> Resposta de rede capturada!");
+                console.log(">> Aguardando chegada do arquivo pela rede...");
+
+                // Espera a promessa da rede ser cumprida (Timeout de 60s)
+                const responsePDF = await pdfPromise.catch(() => null);
+
+                if (!responsePDF) {
+                    throw new Error("Timeout: O arquivo PDF não foi detectado na rede.");
+                }
+
+                console.log(">> Pacote capturado! Baixando buffer...");
                 const pdfBuffer = await responsePDF.body();
-
                 console.log(`>> Tamanho capturado: ${pdfBuffer.length} bytes`);
 
-                // Validação
                 if (pdfBuffer.length < 1000) {
                     throw new Error("Arquivo capturado inválido ou vazio (menos de 1KB).");
                 }
@@ -221,8 +230,8 @@ app.post('/webhook/fatura', async (req, res) => {
                         last_error: error.message
                     });
                 }
-                console.log("Reiniciando processo em 5 segundos...");
-                await sleep(5000); // Aumentei o tempo de espera entre erros para limpar o servidor
+                console.log("Lentidão detectada. Reiniciando em 10 segundos...");
+                await sleep(10000);
             }
         }
 
