@@ -1,23 +1,25 @@
 const express = require('express');
 const { chromium } = require('playwright');
-const app = express();
 
+const app = express();
 app.use(express.json());
 
-// CONFIGURAÇÕES
+// --- CONFIGURAÇÕES ---
 const PORT = 3000;
-const AUTH_TOKEN = 'meu-token-secreto-123';
+const AUTH_TOKEN = 'meu-token-secreto-123'; // Altere conforme necessidade
 const MAX_TENTATIVAS = 3;
 
+// Helper para pausas
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 app.post('/webhook/fatura', async (req, res) => {
+    // 1. Autenticação Básica
     const authHeader = req.headers['authorization'];
-
     if (!authHeader || authHeader !== `Bearer ${AUTH_TOKEN}`) {
         return res.status(401).json({ error: 'Não autorizado. Token inválido.' });
     }
 
+    // 2. Extração de Dados
     const {
         cnpj = '15.070.244/0001-18',
         email = 'adm.financeiro@mov.pro.br',
@@ -29,11 +31,13 @@ app.post('/webhook/fatura', async (req, res) => {
     let browser = null;
 
     try {
+        // Inicia o browser (uma única vez para as tentativas)
         browser = await chromium.launch({
-            headless: false,
-            args: ['--no-sandbox']
+            headless: true,
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
 
+        // Loop de Tentativas
         for (let tentativa = 1; tentativa <= MAX_TENTATIVAS; tentativa++) {
             let context = null;
             let page = null;
@@ -41,27 +45,29 @@ app.post('/webhook/fatura', async (req, res) => {
             try {
                 console.log(`\n--- Tentativa ${tentativa} de ${MAX_TENTATIVAS} ---`);
 
+                // Cria contexto isolado
                 context = await browser.newContext({ acceptDownloads: true });
                 page = await context.newPage();
-                page.setDefaultTimeout(120000);
+                page.setDefaultTimeout(120000); // 2 minutos de timeout geral
 
-                // --- FLUXO DE NAVEGAÇÃO E LOGIN (Mantido igual) ---
+                // --- PASSO 1: NAVEGAÇÃO INICIAL ---
                 console.log('1. Acessando portal...');
                 await page.goto('https://pa.equatorialenergia.com.br/');
                 await page.waitForLoadState('networkidle');
 
-                // Popups e Cookies
+                // Tratar Popups e Cookies Iniciais
                 try {
                     const btnFechar = page.locator('#pm__popup-21883').getByRole('button', { name: 'Fechar' });
                     if (await btnFechar.isVisible({ timeout: 5000 })) await btnFechar.click();
+
                     const checkAviso = page.getByRole('checkbox', { name: 'Li e entendi o Aviso de' });
                     if (await checkAviso.isVisible({ timeout: 5000 })) {
                         await checkAviso.check();
                         await page.getByRole('button', { name: 'Enviar' }).click();
                     }
-                } catch (e) { }
+                } catch (e) { /* Ignora erros não críticos de popup */ }
 
-                // Login
+                // --- PASSO 2: LOGIN ---
                 console.log('2. Realizando Login...');
                 const inputCnpj = page.getByRole('textbox', { name: 'Digite aqui' }).first();
                 await inputCnpj.waitFor({ state: 'visible' });
@@ -73,164 +79,190 @@ app.post('/webhook/fatura', async (req, res) => {
                 await inputEmail.fill(email);
                 await page.getByRole('button', { name: 'Entrar' }).click();
 
-                // Validação de Acesso
+                // Validação de Sucesso no Login
                 try {
-                    await page.locator('span').filter({ hasText: 'mov' }).first().waitFor({ state: 'visible', timeout: 60000 });
+                    // Espera aparecer algo que confirme o login ou redirecionamento
+                    await Promise.race([
+                        page.locator('span').filter({ hasText: 'mov' }).first().waitFor({ state: 'visible', timeout: 60000 }),
+                        page.waitForURL(/sua-conta/, { timeout: 60000 })
+                    ]);
                 } catch (e) {
-                    if (!page.url().includes('sua-conta')) throw new Error("Login falhou.");
+                    throw new Error("Login falhou ou demorou muito.");
                 }
 
+                // --- PASSO 3: ÁREA DO CLIENTE ---
                 console.log('3. Indo para área de faturas...');
-                await page.goto('https://pa.equatorialenergia.com.br/sua-conta/');
+                if (!page.url().includes('sua-conta')) {
+                    await page.goto('https://pa.equatorialenergia.com.br/sua-conta/');
+                }
                 await page.waitForLoadState('networkidle');
 
-                // Tratamento de termos repetidos
+                // Termos da Área do Cliente (se aparecer)
                 try {
                     const checkTermo = page.getByRole('checkbox', { name: 'Li e entendi o Aviso de' });
-                    if (await checkTermo.isVisible({ timeout: 3000 })) {
+                    if (await checkTermo.isVisible({ timeout: 5000 })) {
                         await checkTermo.check();
                         await page.getByRole('checkbox', { name: 'Concordo em disponibilizar' }).check();
                         await page.getByRole('button', { name: 'Enviar' }).click();
                     }
                 } catch (e) { }
 
-                // Seleção de Contrato
+                // Definir Contrato
                 const inputContrato = page.getByRole('textbox', { name: 'Digite aqui' }).first();
                 await inputContrato.waitFor({ state: 'visible' });
                 await inputContrato.fill(contrato);
                 await page.getByRole('button', { name: 'Definir' }).click();
-                await sleep(3000);
+                await sleep(3000); // Espera a definição do contrato processar
 
-                // Emitir Segunda Via
+                // Acessar Segunda Via
                 const linkSegundaVia = page.getByRole('link', { name: 'Emitir segunda via e' });
                 await linkSegundaVia.waitFor({ state: 'visible' });
                 await linkSegundaVia.click();
                 await page.waitForLoadState('networkidle');
 
-                // Filtro "Apenas Vencidas"
-                const precisaClicar = await page.$eval('#apenas-vencidas', (el) => !el.checked).catch(() => false);
-                if (precisaClicar) {
-                    await page.evaluate(() => {
-                        const checkbox = document.getElementById('apenas-vencidas');
-                        if (checkbox) checkbox.parentElement.click();
-                    });
-                    await sleep(4000);
+                // Filtros da Tabela (Apenas Vencidas vs Todas)
+                const checkboxVencidas = page.locator('#apenas-vencidas');
+                if (await checkboxVencidas.count() > 0) {
+                    const isChecked = await checkboxVencidas.isChecked();
+                    // Se quiser ver todas as abertas (vencidas ou a vencer), desmarque se necessário
+                    // ou mantenha conforme regra de negócio. Aqui mantemos o padrão do site.
+                    // Exemplo: Se quiser garantir que vê tudo:
+                    // if (isChecked) await checkboxVencidas.click(); 
+                    await sleep(2000);
                 }
 
-                // Buscar na Tabela
+                // --- PASSO 4: SELEÇÃO DA FATURA ---
                 console.log("4. Buscando fatura na tabela...");
                 const faturaRow = page.locator('#list-bills-segunda-via tbody tr').first();
-                if (!(await faturaRow.isVisible({ timeout: 15000 }))) {
+
+                // Se não houver linhas, não tem fatura
+                if (!(await faturaRow.isVisible({ timeout: 10000 }))) {
+                    console.log("   Nenhuma fatura encontrada na tabela.");
                     await browser.close();
                     return res.json({ status: 'success', message: 'Não existem faturas em aberto.', has_invoice: false });
                 }
 
-                // Abrir Modal
+                // Abre o Modal clicando no valor
                 await faturaRow.locator('.bill-value').first().click();
 
-                // Esperar "Aguarde"
+                // Aguarda loader desaparecer
                 try {
                     const loader = page.getByText('Aguarde');
-                    if (await loader.isVisible({ timeout: 5000 })) await loader.waitFor({ state: 'hidden', timeout: 60000 });
+                    if (await loader.isVisible({ timeout: 3000 })) await loader.waitFor({ state: 'hidden', timeout: 30000 });
                 } catch (e) { }
 
-                console.log("5. Preparando captura (Estratégia Híbrida)...");
+                // --- PASSO 5: ALGORITMO DE DOWNLOAD HÍBRIDO ---
+                console.log("5. Iniciando estratégia de captura híbrida...");
+
                 const btnVerFaturaModal = page.getByText('Ver Fatura');
-                await btnVerFaturaModal.waitFor({ state: 'visible', timeout: 60000 });
+                // Aguarda o botão estar clicável
+                await btnVerFaturaModal.waitFor({ state: 'visible', timeout: 30000 });
 
-                // --- INÍCIO DO ALGORITMO DE CAPTURA DO SEU DIAGRAMA ---
-
-                // Preparar Estratégia 1: Listener de Rede (Assíncrono)
-                // Inicia a escuta ANTES de clicar
-                const networkPromise = context.waitForEvent('response', {
+                // A. Listener de Rede (Prepara antes de clicar)
+                // Captura se o site enviar o PDF direto por stream/download
+                const responsePromise = context.waitForEvent('response', {
                     predicate: response => {
-                        const type = response.headers()['content-type'] || '';
-                        return response.status() === 200 &&
-                            (type.includes('application/pdf') || type.includes('application/octet-stream')) &&
-                            (response.url().includes('.pdf') || response.url().includes('exibir-faturas'));
-                    },
-                    timeout: 10000 // Só espera 10s pela rede, se não vier, vai pro DOM
-                }).catch(() => null); // Se der timeout, retorna null sem quebrar
+                        const headers = response.headers();
+                        const cType = (headers['content-type'] || '').toLowerCase();
+                        const cDisp = (headers['content-disposition'] || '').toLowerCase();
 
-                // Ação: Clicar e Abrir Popup
+                        // Critérios para identificar PDF
+                        const isPdfType = cType.includes('application/pdf') || cType.includes('application/octet-stream');
+                        const isPdfExt = response.url().toLowerCase().includes('.pdf');
+                        const isAttachment = cDisp.includes('attachment') && cDisp.includes('.pdf');
+
+                        return response.status() === 200 && (isPdfType || isPdfExt || isAttachment);
+                    },
+                    timeout: 20000 // 20s de tolerância para rede
+                }).catch(() => null); // Evita crash se der timeout
+
+                // B. Clicar e Capturar Popup
                 console.log("   Clicando em 'Ver Fatura'...");
                 const [popup] = await Promise.all([
-                    page.waitForEvent('popup'),
+                    page.waitForEvent('popup', { timeout: 30000 }),
                     btnVerFaturaModal.click()
                 ]);
 
-                console.log("   Popup aberto. Executando Estratégia 1 (Rede)...");
-                await popup.waitForLoadState();
+                console.log("   Popup aberto. Verificando resposta de rede...");
+                await popup.waitForLoadState('domcontentloaded');
 
+                // C. Executa Estratégia 1 (Rede)
                 let pdfBuffer = null;
-
-                // Tenta pegar da rede primeiro
-                const networkResponse = await networkPromise;
+                const networkResponse = await responsePromise;
 
                 if (networkResponse) {
-                    console.log("   [SUCESSO] Arquivo detectado via Rede!");
-                    pdfBuffer = await networkResponse.body();
+                    try {
+                        pdfBuffer = await networkResponse.body();
+                        if (pdfBuffer.length > 500) {
+                            console.log("   [SUCESSO] Arquivo capturado via Rede (Network Event)!");
+                        } else {
+                            console.log("   [AVISO] Resposta de rede muito pequena, tentando DOM...");
+                            pdfBuffer = null;
+                        }
+                    } catch (e) {
+                        console.log("   [ERRO] Falha ao ler body da rede: " + e.message);
+                    }
                 }
 
-                // Se falhou a rede ou veio vazio (ex: 345 bytes), vai para Estratégia 2
-                if (!pdfBuffer || pdfBuffer.length < 1000) {
-                    console.log("   [FALLBACK] Rede falhou ou arquivo vazio. Iniciando Estratégia 2 (DOM Scraping)...");
+                // D. Executa Estratégia 2 (DOM Scraping - Fetch Interno)
+                if (!pdfBuffer) {
+                    console.log("   [FALLBACK] Rede falhou. Iniciando varredura do DOM no Popup...");
+                    await sleep(3000); // Tempo para o visualizador (Chrome ou PDF.js) carregar
 
-                    // Espera um pouco para o Chrome montar o visualizador interno
-                    await sleep(3000);
-
-                    // Injeta Script para extrair Blob/Embed
-                    const base64FromDOM = await popup.evaluate(async () => {
-                        // Helpers
-                        const blobToText = async (blob) => {
-                            return new Promise((resolve) => {
-                                const reader = new FileReader();
-                                reader.onloadend = () => resolve(reader.result.split(',')[1]);
-                                reader.readAsDataURL(blob);
-                            });
+                    // Script injetado no browser para baixar blobs ou embeds
+                    const base64Data = await popup.evaluate(async () => {
+                        const fetchAsBase64 = async (url) => {
+                            try {
+                                const response = await fetch(url);
+                                const blob = await response.blob();
+                                return new Promise((resolve) => {
+                                    const reader = new FileReader();
+                                    reader.onloadend = () => resolve(reader.result.split(',')[1]);
+                                    reader.readAsDataURL(blob);
+                                });
+                            } catch (err) { return null; }
                         };
 
-                        // 1. Tenta achar Embed do Chrome
+                        // 1. URL da aba é um Blob ou PDF direto?
+                        if (window.location.href.startsWith('blob:') || window.location.href.endsWith('.pdf')) {
+                            return await fetchAsBase64(window.location.href);
+                        }
+
+                        // 2. Procura <embed> (Padrão Chrome)
                         const embed = document.querySelector('embed[type="application/pdf"]');
-                        if (embed && embed.src) {
-                            console.log('Embed encontrado:', embed.src);
-                            const resp = await fetch(embed.src);
-                            const blob = await resp.blob();
-                            return await blobToText(blob);
-                        }
+                        if (embed && embed.src) return await fetchAsBase64(embed.src);
 
-                        // 2. Tenta achar Iframe
+                        // 3. Procura <iframe>
                         const iframe = document.querySelector('iframe');
-                        if (iframe && iframe.src) {
-                            console.log('Iframe encontrado:', iframe.src);
-                            const resp = await fetch(iframe.src);
-                            const blob = await resp.blob();
-                            return await blobToText(blob);
-                        }
+                        if (iframe && iframe.src && iframe.src.includes('.pdf')) return await fetchAsBase64(iframe.src);
 
-                        // 3. Tenta baixar a própria URL da janela (se for blob:...)
-                        if (window.location.href.startsWith('blob:') || document.contentType === 'application/pdf') {
-                            const resp = await fetch(window.location.href);
-                            const blob = await resp.blob();
-                            return await blobToText(blob);
+                        // 4. PDF.js Viewer
+                        // @ts-ignore
+                        if (window.PDFViewerApplication && window.PDFViewerApplication.url) {
+                            // @ts-ignore
+                            return await fetchAsBase64(window.PDFViewerApplication.url);
                         }
 
                         return null;
                     });
 
-                    if (base64FromDOM) {
-                        console.log("   [SUCESSO] Arquivo extraído via DOM (Blob)!");
-                        pdfBuffer = Buffer.from(base64FromDOM, 'base64');
+                    if (base64Data) {
+                        console.log("   [SUCESSO] Arquivo capturado via DOM Scraping!");
+                        pdfBuffer = Buffer.from(base64Data, 'base64');
                     }
                 }
 
+                // Limpeza do Popup
+                if (popup && !popup.isClosed()) await popup.close();
+
                 // Validação Final
-                if (!pdfBuffer || pdfBuffer.length < 1000) {
-                    throw new Error("Falha crítica: Todas as estratégias (Rede e DOM) falharam em capturar o PDF.");
+                if (!pdfBuffer || pdfBuffer.length < 500) {
+                    throw new Error("Falha crítica: Não foi possível capturar o binário do PDF.");
                 }
 
+                // --- SUCESSO ---
                 const finalBase64 = pdfBuffer.toString('base64');
-                console.log(`>> Processo concluído. PDF: ${pdfBuffer.length} bytes.`);
+                console.log(`>> Processo concluído. PDF gerado: ${pdfBuffer.length} bytes.`);
 
                 await browser.close();
 
@@ -243,30 +275,36 @@ app.post('/webhook/fatura', async (req, res) => {
                 });
 
             } catch (error) {
+                // --- TRATAMENTO DE ERROS E RETRY ---
                 console.error(`Erro na tentativa ${tentativa}: ${error.message}`);
-                if (page) await page.close();
-                if (context) await context.close();
+
+                // Fecha páginas para limpar memória
+                if (page) await page.close().catch(() => { });
+                if (context) await context.close().catch(() => { });
 
                 if (tentativa === MAX_TENTATIVAS) {
-                    if (browser) await browser.close();
+                    console.log("Esgotadas todas as tentativas.");
+                    if (browser) await browser.close().catch(() => { });
+
                     return res.status(500).json({
                         status: 'error',
                         message: 'Falha após 3 tentativas.',
                         last_error: error.message
                     });
                 }
+
                 console.log("Reiniciando em 10s...");
                 await sleep(10000);
             }
         }
 
     } catch (error) {
-        console.error("Erro fatal:", error);
-        if (browser) await browser.close();
-        return res.status(500).json({ error: 'Erro crítico.' });
+        console.error("Erro fatal no servidor:", error);
+        if (browser) await browser.close().catch(() => { });
+        return res.status(500).json({ error: 'Erro interno crítico.' });
     }
 });
 
 app.listen(PORT, () => {
-    console.log(`Servidor rodando na porta ${PORT}`);
+    console.log(`Servidor de automação rodando na porta ${PORT}`);
 });
