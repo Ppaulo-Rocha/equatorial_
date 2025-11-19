@@ -9,7 +9,6 @@ const PORT = 3000;
 const AUTH_TOKEN = 'meu-token-secreto-123';
 const MAX_TENTATIVAS = 3;
 
-// Aumentei o sleep padrão se precisar usar
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 app.post('/webhook/fatura', async (req, res) => {
@@ -31,7 +30,7 @@ app.post('/webhook/fatura', async (req, res) => {
 
     try {
         browser = await chromium.launch({
-            headless: false, // Mude para false se quiser ver o "Aguarde" na tela
+            headless: false, // Mude para false se quiser ver o botão sendo clicado
             args: ['--no-sandbox']
         });
 
@@ -44,8 +43,7 @@ app.post('/webhook/fatura', async (req, res) => {
 
                 context = await browser.newContext({ acceptDownloads: true });
                 page = await context.newPage();
-                // Aumentei o timeout geral para 90s (sites lentos exigem paciência)
-                page.setDefaultTimeout(90000);
+                page.setDefaultTimeout(90000); // Timeout longo para segurança
 
                 // 1. Acessa Home
                 console.log('Carregando portal...');
@@ -125,7 +123,7 @@ app.post('/webhook/fatura', async (req, res) => {
                     await sleep(4000);
                 }
 
-                // 8. Captura da Fatura (COM A NOVA ESPERA)
+                // --- 8. PROCESSO DE DOWNLOAD ATUALIZADO ---
                 console.log("Buscando fatura na tabela...");
                 const tbody = page.locator('#list-bills-segunda-via tbody');
                 const faturaRow = tbody.locator('tr').first();
@@ -138,56 +136,44 @@ app.post('/webhook/fatura', async (req, res) => {
 
                 const celulaValor = faturaRow.locator('.bill-value').first();
 
-                // Prepara para aceitar Dialogs
+                // Listener de Dialog (caso apareça confirmação)
                 page.once('dialog', async dialog => { await dialog.dismiss().catch(() => { }); });
 
-                console.log("Clicando na fatura...");
-
-                // --- INÍCIO DA LÓGICA DE ESPERA DO "AGUARDE" ---
-
-                // Clica no valor para abrir o modal
+                console.log("1. Clicando no valor para abrir modal...");
                 await celulaValor.click();
 
-                console.log("Aguardando processamento do sistema (Tela 'Aguarde')...");
-
-                // 1. Pausa fixa generosa (solicitada) - 10 segundos para garantir
-                await sleep(10000);
-
-                // 2. Pausa Inteligente: Se o texto "Aguarde" ainda estiver visível, esperamos ele sumir.
-                // Isso garante que se a internet estiver muito lenta e levar 20s, o robô espera.
+                // Espera Inteligente do "Aguarde"
+                console.log("2. Aguardando processamento do modal...");
                 try {
                     const loaderAguarde = page.getByText('Aguarde');
-                    if (await loaderAguarde.isVisible()) {
-                        console.log("O sistema ainda está processando. Esperando 'Aguarde' sumir...");
-                        await loaderAguarde.waitFor({ state: 'hidden', timeout: 60000 }); // Espera até 60s sumir
-                        console.log("Processamento finalizado.");
+                    // Se aparecer "Aguarde", espera sumir (timeout generoso de 60s)
+                    if (await loaderAguarde.isVisible({ timeout: 5000 })) {
+                        await loaderAguarde.waitFor({ state: 'hidden', timeout: 60000 });
+                        console.log("   Carregamento finalizado (spinner sumiu).");
                     }
+                    await sleep(2000); // Pausa extra de segurança pós-carregamento
                 } catch (e) {
-                    console.log("Aviso: Não foi possível verificar o estado do botão 'Aguarde'. Seguindo...");
+                    console.log("   Não foi necessário esperar o 'Aguarde'.");
                 }
 
-                // --- FIM DA LÓGICA DE ESPERA ---
+                // --- CLIQUE NO BOTÃO DO MODAL (NOVA ETAPA) ---
+                console.log("3. Procurando botão 'Ver Fatura' dentro do modal...");
 
-                console.log("Capturando Popup do PDF...");
+                // Busca o botão/texto exato conforme sua imagem
+                const btnVerFaturaModal = page.getByText('Ver Fatura');
+                await btnVerFaturaModal.waitFor({ state: 'visible', timeout: 15000 });
 
-                // Tenta pegar a página que (esperamos) já abriu ou vai abrir
-                // Como já clicamos antes, usamos waitForEvent esperando o resultado daquele clique anterior
-                // Se o popup não abriu no clique inicial, pode ser necessário clicar em algum botão "Visualizar" dentro do modal?
-                // Assumindo que o fluxo é: Clique Valor -> Modal Carregando -> Popup Abre Sozinho:
-                const pagePromise = context.waitForEvent('page').catch(() => null);
-                const popup = await pagePromise;
+                console.log("4. Clicando em 'Ver Fatura' para abrir o PDF...");
 
-                if (!popup) {
-                    // Se o popup não abriu sozinho, talvez tenha um botão "Baixar" ou "Visualizar" no modal final?
-                    // Vamos tentar achar o botão "Ver Fatura" ou "Baixar" dentro do modal se o popup não veio
-                    console.log("Popup não abriu automaticamente. Procurando botão no modal...");
-                    // (Lógica opcional de fallback se o clique inicial não abrir a janela)
-                    throw new Error("O popup da fatura não abriu após o tempo de espera.");
-                }
+                const [popup] = await Promise.all([
+                    page.waitForEvent('popup'), // Agora sim esperamos a nova aba
+                    btnVerFaturaModal.click()   // Clica no botão azul do modal
+                ]);
 
+                console.log(">> Popup capturado! Baixando...");
                 await popup.waitForLoadState();
                 const pdfUrl = popup.url();
-                console.log(`>> Sucesso! PDF gerado: ${pdfUrl}`);
+                console.log(`>> URL Final: ${pdfUrl}`);
 
                 const responsePDF = await context.request.get(pdfUrl);
                 const base64PDF = (await responsePDF.body()).toString('base64');
@@ -201,6 +187,7 @@ app.post('/webhook/fatura', async (req, res) => {
                     filename: `fatura_${contrato}.pdf`,
                     file_base64: base64PDF
                 });
+                // ------------------------------------------------
 
             } catch (error) {
                 console.error(`Erro na tentativa ${tentativa}: ${error.message}`);
