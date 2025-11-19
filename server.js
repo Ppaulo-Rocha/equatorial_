@@ -30,7 +30,7 @@ app.post('/webhook/fatura', async (req, res) => {
 
     try {
         browser = await chromium.launch({
-            headless: true,
+            headless: false,
             args: ['--no-sandbox']
         });
 
