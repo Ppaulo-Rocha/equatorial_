@@ -151,56 +151,74 @@ app.post('/webhook/fatura', async (req, res) => {
                     if (await loader.isVisible({ timeout: 3000 })) await loader.waitFor({ state: 'hidden', timeout: 30000 });
                 } catch (e) { }
 
-                // --- PASSO 5: ESTRATÉGIA "PRINT TO PDF" (Nativa do Navegador) ---
-                console.log("5. Iniciando geração de PDF (Simulando Impressão)...");
+                // --- PASSO 5: ESTRATÉGIA CIRÚRGICA (Interceptação de Payload POST) ---
+                console.log("5. Iniciando estratégia: Interceptação de Form Data (Payload 'bill')...");
 
                 const btnVerFaturaModal = page.getByText('Ver Fatura');
                 await btnVerFaturaModal.waitFor({ state: 'visible', timeout: 30000 });
 
-                // 1. Abrir o Popup
-                console.log("   Clicando em 'Ver Fatura'...");
-                const [popup] = await Promise.all([
-                    page.waitForEvent('popup', { timeout: 60000 }),
-                    btnVerFaturaModal.click()
-                ]);
-
-                console.log("   Popup aberto. Aguardando carregamento total...");
-
-                // 2. Garantir que a página carregou completamente (imagens, fontes, etc)
-                await popup.waitForLoadState('domcontentloaded');
-                await popup.waitForLoadState('networkidle'); // Espera o tráfego de rede parar (garante que a fatura renderizou)
-
-                // Pausa de segurança para scripts de renderização visual terminarem
-                await sleep(3000);
-
-                // 3. Forçar o modo de impressão (CSS de Print)
-                // Isso faz o site "pensar" que está sendo impresso, escondendo botões e menus automaticamente
-                await popup.emulateMedia({ media: 'print' });
-
-                // 4. Gerar o PDF (Equivalente ao "Salvar como PDF" do Chrome)
-                console.log("   Executando comando de impressão...");
-                const pdfBuffer = await popup.pdf({
-                    format: 'A4',           // Formato padrão
-                    printBackground: true,  // Importante para manter cores de fundo/cabeçalhos
-                    margin: {               // Margens mínimas para não cortar conteúdo
-                        top: '10mm',
-                        bottom: '10mm',
-                        left: '10mm',
-                        right: '10mm'
+                // 1. Preparar a Armadilha (Listener de Requisição)
+                // Vamos capturar a requisição POST que o navegador envia ao abrir o visualizador
+                const requestPromise = context.waitForEvent('request', {
+                    predicate: request => {
+                        return request.url().includes('exibir-faturas') &&
+                            request.method() === 'POST';
                     },
-                    // scale: 0.9 // Se a fatura estiver cortando, descomente para reduzir um pouco o zoom
-                });
+                    timeout: 20000 // 20s para o clique disparar a requisição
+                }).catch(() => null);
 
-                // Limpeza
-                if (popup && !popup.isClosed()) await popup.close();
+                // 2. Clicar no Botão
+                console.log("   Clicando em 'Ver Fatura'...");
+                // Não precisamos esperar o popup carregar visualmente, só precisamos que o clique dispare a requisição
+                await btnVerFaturaModal.click();
 
-                // Validação
-                if (!pdfBuffer || pdfBuffer.length < 1000) {
-                    throw new Error("O PDF gerado via impressão está vazio.");
+                console.log("   Aguardando disparo da requisição POST...");
+
+                // 3. Capturar os Dados
+                const request = await requestPromise;
+                let finalBase64 = null;
+
+                if (request) {
+                    console.log("   [SUCESSO] Requisição POST interceptada!");
+
+                    // Obtém o corpo do POST (onde está o 'bill=JVBER...')
+                    const postData = request.postData();
+
+                    if (postData) {
+                        // O corpo vem como "bill=JVBERi0xLjQKJe...", precisamos extrair o valor
+                        // Usamos URLSearchParams para decodificar corretamente caracteres especiais
+                        const params = new URLSearchParams(postData);
+                        const billBase64 = params.get('bill');
+
+                        if (billBase64 && billBase64.startsWith('JVBER')) {
+                            console.log("   [SUCESSO] Base64 do PDF extraído do payload 'bill'.");
+                            finalBase64 = billBase64;
+                        } else {
+                            console.log("   [ERRO] Campo 'bill' não encontrado ou inválido no payload.");
+                        }
+                    } else {
+                        console.log("   [ERRO] A requisição interceptada não tinha corpo (payload).");
+                    }
+                } else {
+                    console.log("   [FALHA] A requisição POST para 'exibir-faturas' não foi detectada.");
                 }
 
-                const finalBase64 = pdfBuffer.toString('base64');
-                console.log(`>> Sucesso! PDF impresso com ${pdfBuffer.length} bytes.`);
+                // Tenta fechar qualquer popup que tenha aberto (limpeza)
+                const pages = context.pages();
+                if (pages.length > 1) {
+                    await pages[pages.length - 1].close().catch(() => { });
+                }
+
+                // 4. Validação Final
+                if (!finalBase64) {
+                    throw new Error("Não foi possível extrair o Base64 do payload da requisição.");
+                }
+
+                // Verifica se o Base64 precisa de limpeza (espaços ou quebras de linha)
+                finalBase64 = finalBase64.replace(/\s/g, '');
+
+                const bufferTamanho = Buffer.from(finalBase64, 'base64').length;
+                console.log(`>> Processo concluído. PDF original recuperado: ${bufferTamanho} bytes.`);
 
                 await browser.close();
 
