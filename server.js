@@ -30,7 +30,7 @@ app.post('/webhook/fatura', async (req, res) => {
 
     try {
         browser = await chromium.launch({
-            headless: false, // Mude para false se quiser ver o botão sendo clicado
+            headless: true,
             args: ['--no-sandbox']
         });
 
@@ -43,7 +43,7 @@ app.post('/webhook/fatura', async (req, res) => {
 
                 context = await browser.newContext({ acceptDownloads: true });
                 page = await context.newPage();
-                page.setDefaultTimeout(90000); // Timeout longo para segurança
+                page.setDefaultTimeout(90000);
 
                 // 1. Acessa Home
                 console.log('Carregando portal...');
@@ -81,7 +81,7 @@ app.post('/webhook/fatura', async (req, res) => {
                 console.log('Validando acesso...');
                 await page.locator('span').filter({ hasText: 'mov' }).first().waitFor({ state: 'visible', timeout: 20000 });
 
-                // 4. Navegação Interna
+                // 4. Navegação
                 console.log('Acessando "Sua Conta"...');
                 await page.goto('https://pa.equatorialenergia.com.br/sua-conta/');
                 await page.waitForLoadState('networkidle');
@@ -123,7 +123,7 @@ app.post('/webhook/fatura', async (req, res) => {
                     await sleep(4000);
                 }
 
-                // --- 8. PROCESSO DE DOWNLOAD ATUALIZADO ---
+                // 8. Tabela e Modal
                 console.log("Buscando fatura na tabela...");
                 const tbody = page.locator('#list-bills-segunda-via tbody');
                 const faturaRow = tbody.locator('tr').first();
@@ -135,49 +135,70 @@ app.post('/webhook/fatura', async (req, res) => {
                 }
 
                 const celulaValor = faturaRow.locator('.bill-value').first();
-
-                // Listener de Dialog (caso apareça confirmação)
                 page.once('dialog', async dialog => { await dialog.dismiss().catch(() => { }); });
 
                 console.log("1. Clicando no valor para abrir modal...");
                 await celulaValor.click();
 
-                // Espera Inteligente do "Aguarde"
                 console.log("2. Aguardando processamento do modal...");
                 try {
                     const loaderAguarde = page.getByText('Aguarde');
-                    // Se aparecer "Aguarde", espera sumir (timeout generoso de 60s)
                     if (await loaderAguarde.isVisible({ timeout: 5000 })) {
                         await loaderAguarde.waitFor({ state: 'hidden', timeout: 60000 });
-                        console.log("   Carregamento finalizado (spinner sumiu).");
                     }
-                    await sleep(2000); // Pausa extra de segurança pós-carregamento
-                } catch (e) {
-                    console.log("   Não foi necessário esperar o 'Aguarde'.");
-                }
+                    await sleep(1500);
+                } catch (e) { }
 
-                // --- CLIQUE NO BOTÃO DO MODAL (NOVA ETAPA) ---
                 console.log("3. Procurando botão 'Ver Fatura' dentro do modal...");
-
-                // Busca o botão/texto exato conforme sua imagem
                 const btnVerFaturaModal = page.getByText('Ver Fatura');
                 await btnVerFaturaModal.waitFor({ state: 'visible', timeout: 15000 });
 
                 console.log("4. Clicando em 'Ver Fatura' para abrir o PDF...");
 
                 const [popup] = await Promise.all([
-                    page.waitForEvent('popup'), // Agora sim esperamos a nova aba
-                    btnVerFaturaModal.click()   // Clica no botão azul do modal
+                    page.waitForEvent('popup'),
+                    btnVerFaturaModal.click()
                 ]);
 
-                console.log(">> Popup capturado! Baixando...");
+                console.log(">> Popup capturado! Aguardando carregamento...");
                 await popup.waitForLoadState();
+
+                // Pequena pausa para garantir renderização da URL final
+                await sleep(2000);
+
                 const pdfUrl = popup.url();
-                console.log(`>> URL Final: ${pdfUrl}`);
+                console.log(`>> URL Final Capturada: ${pdfUrl}`);
+
+                // --- NOVA LÓGICA DE VALIDAÇÃO DE DOWNLOAD ---
+                console.log(">> Baixando arquivo para validar...");
 
                 const responsePDF = await context.request.get(pdfUrl);
-                const base64PDF = (await responsePDF.body()).toString('base64');
 
+                // Verifica status HTTP
+                if (!responsePDF.ok()) {
+                    throw new Error(`Falha no download. Status HTTP: ${responsePDF.status()}`);
+                }
+
+                const pdfBuffer = await responsePDF.body();
+                const contentType = responsePDF.headers()['content-type'];
+
+                console.log(`>> Tamanho do arquivo: ${pdfBuffer.length} bytes`);
+                console.log(`>> Tipo do arquivo: ${contentType}`);
+
+                // Validações Críticas
+                if (!pdfBuffer || pdfBuffer.length < 500) {
+                    // Se for menor que 500 bytes, provavelmente é erro ou arquivo vazio
+                    throw new Error("O arquivo baixado está vazio ou corrompido (tamanho insuficiente).");
+                }
+
+                // Opcional: Validar se é PDF mesmo (alguns servidores retornam octet-stream, então o check é flexível)
+                if (contentType && contentType.includes('text/html')) {
+                    throw new Error("A URL retornou uma página HTML em vez do PDF.");
+                }
+
+                const base64PDF = pdfBuffer.toString('base64');
+
+                // Se chegou aqui, o arquivo é válido. Fecha e envia.
                 await browser.close();
 
                 return res.json({
@@ -187,10 +208,11 @@ app.post('/webhook/fatura', async (req, res) => {
                     filename: `fatura_${contrato}.pdf`,
                     file_base64: base64PDF
                 });
-                // ------------------------------------------------
 
             } catch (error) {
                 console.error(`Erro na tentativa ${tentativa}: ${error.message}`);
+
+                // Garante limpeza antes da próxima tentativa
                 if (page) await page.close();
                 if (context) await context.close();
 
@@ -199,7 +221,7 @@ app.post('/webhook/fatura', async (req, res) => {
                     if (browser) await browser.close();
                     return res.status(500).json({
                         status: 'error',
-                        message: 'Falha após 3 tentativas.',
+                        message: 'Falha ao obter o PDF após 3 tentativas.',
                         last_error: error.message
                     });
                 }
