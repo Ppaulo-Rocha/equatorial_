@@ -6,14 +6,14 @@ app.use(express.json());
 
 // --- CONFIGURAÇÕES ---
 const PORT = 3000;
-const AUTH_TOKEN = 'meu-token-secreto-123';
+const AUTH_TOKEN = 'meu-token-secreto-123'; // Altere conforme necessidade
 const MAX_TENTATIVAS = 3;
 
-// Helper para pausas (usado raramente agora)
+// Helper para pausas
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 app.post('/webhook/fatura', async (req, res) => {
-    // 1. Autenticação
+    // 1. Autenticação Básica
     const authHeader = req.headers['authorization'];
     if (!authHeader || authHeader !== `Bearer ${AUTH_TOKEN}`) {
         return res.status(401).json({ error: 'Não autorizado. Token inválido.' });
@@ -26,24 +26,18 @@ app.post('/webhook/fatura', async (req, res) => {
         contrato = '000108799374'
     } = req.body;
 
-    console.log(`\n=== Contrato: ${contrato} ===`);
+    console.log(`\n=== Nova solicitação para contrato: ${contrato} ===`);
 
     let browser = null;
 
     try {
-        // OTIMIZAÇÃO 1: Args para performance máxima (Modo Turbo)
+        // Inicia o browser (uma única vez para as tentativas)
         browser = await chromium.launch({
-            headless: false, // Mude para false apenas se precisar debugar visualmente
-            args: [
-                '--no-sandbox',
-                '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage',
-                '--disable-accelerated-2d-canvas',
-                '--disable-gpu',
-                '--disable-extensions'
-            ]
+            headless: false,
+            args: ['--no-sandbox', '--disable-setuid-sandbox']
         });
 
+        // Loop de Tentativas
         for (let tentativa = 1; tentativa <= MAX_TENTATIVAS; tentativa++) {
             let context = null;
             let page = null;
@@ -51,146 +45,181 @@ app.post('/webhook/fatura', async (req, res) => {
             try {
                 console.log(`\n--- Tentativa ${tentativa} de ${MAX_TENTATIVAS} ---`);
 
-                context = await browser.newContext({
-                    acceptDownloads: true,
-                    userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-                });
-
-                // OTIMIZAÇÃO 2: Bloquear carregamento de "Lixo" (Imagens, CSS, Fontes)
-                // Isso reduz o tempo de carregamento em até 80%
-                await context.route('**/*.{png,jpg,jpeg,gif,webp,svg,css,woff,woff2,ttf,otf}', route => route.abort());
-
+                // Cria contexto isolado
+                context = await browser.newContext({ acceptDownloads: true });
                 page = await context.newPage();
-                // Reduzi o timeout pois o script agora é muito mais rápido. 
-                // Se travar por 60s, é melhor reiniciar do que esperar 2 min.
-                page.setDefaultTimeout(60000);
+                page.setDefaultTimeout(120000); // 2 minutos de timeout geral
 
-                // --- PASSO 1: LOGIN RÁPIDO ---
+                // --- PASSO 1: NAVEGAÇÃO INICIAL ---
                 console.log('1. Acessando portal...');
-                // 'domcontentloaded' é mais rápido que networkidle
-                await page.goto('https://pa.equatorialenergia.com.br/', { waitUntil: 'domcontentloaded' });
+                await page.goto('https://pa.equatorialenergia.com.br/');
+                await page.waitForLoadState('networkidle');
 
-                // Estratégia "Fail-Fast" para Popup:
-                // Tenta preencher o login direto. Se não der, fecha o popup.
+                // Tratar Popups e Cookies Iniciais
                 try {
-                    const inputCnpj = page.getByRole('textbox', { name: 'Digite aqui' }).first();
-                    if (await inputCnpj.isVisible({ timeout: 3000 })) {
-                        await inputCnpj.fill(cnpj);
-                    } else {
-                        // Se o input não está visível, provavelmente tem popup
-                        const btnFechar = page.locator('#pm__popup-21883').getByRole('button', { name: 'Fechar' });
-                        if (await btnFechar.isVisible({ timeout: 2000 })) await btnFechar.click();
+                    const btnFechar = page.locator('#pm__popup-21883').getByRole('button', { name: 'Fechar' });
+                    if (await btnFechar.isVisible({ timeout: 5000 })) await btnFechar.click();
 
-                        // Tenta preencher de novo
-                        await inputCnpj.fill(cnpj);
+                    const checkAviso = page.getByRole('checkbox', { name: 'Li e entendi o Aviso de' });
+                    if (await checkAviso.isVisible({ timeout: 5000 })) {
+                        await checkAviso.check();
+                        await page.getByRole('button', { name: 'Enviar' }).click();
                     }
-                    await page.getByRole('button', { name: 'Entrar' }).click();
+                } catch (e) { /* Ignora erros não críticos de popup */ }
 
-                    // Preenche email
-                    await page.getByRole('textbox', { name: 'email@empresa.com' }).fill(email);
-                    await page.getByRole('button', { name: 'Entrar' }).click();
+                // --- PASSO 2: LOGIN ---
+                console.log('2. Realizando Login...');
+                const inputCnpj = page.getByRole('textbox', { name: 'Digite aqui' }).first();
+                await inputCnpj.waitFor({ state: 'visible' });
+                await inputCnpj.fill(cnpj);
+                await page.getByRole('button', { name: 'Entrar' }).click();
 
-                } catch (e) {
-                    throw new Error(`Erro no fluxo de login: ${e.message}`);
-                }
+                const inputEmail = page.getByRole('textbox', { name: 'email@empresa.com' });
+                await inputEmail.waitFor({ state: 'visible' });
+                await inputEmail.fill(email);
+                await page.getByRole('button', { name: 'Entrar' }).click();
 
-                // Validação de Login (Espera URL mudar ou elemento da home)
+                // Validação de Sucesso no Login
                 try {
+                    // Espera aparecer algo que confirme o login ou redirecionamento
                     await Promise.race([
-                        page.waitForURL(/sua-conta/, { timeout: 30000, waitUntil: 'domcontentloaded' }),
-                        page.locator('span').filter({ hasText: 'mov' }).first().waitFor({ state: 'visible', timeout: 30000 })
+                        page.locator('span').filter({ hasText: 'mov' }).first().waitFor({ state: 'visible', timeout: 90000 }),
+                        page.waitForURL(/sua-conta/, { timeout: 60000 })
                     ]);
                 } catch (e) {
-                    if (!page.url().includes('sua-conta')) throw new Error("Login falhou (Timeout).");
+                    throw new Error("Login falhou ou demorou muito.");
                 }
 
-                // --- PASSO 2: NAVEGAÇÃO E CONTRATO ---
-                console.log('2. Área de faturas...');
+                // --- PASSO 3: ÁREA DO CLIENTE ---
+                console.log('3. Indo para área de faturas...');
                 if (!page.url().includes('sua-conta')) {
-                    await page.goto('https://pa.equatorialenergia.com.br/sua-conta/', { waitUntil: 'domcontentloaded' });
+                    await page.goto('https://pa.equatorialenergia.com.br/sua-conta/');
                 }
+                await page.waitForLoadState('networkidle');
 
-                // Tratamento rápido de termos (se houver)
+                // Termos da Área do Cliente (se aparecer)
                 try {
                     const checkTermo = page.getByRole('checkbox', { name: 'Li e entendi o Aviso de' });
-                    if (await checkTermo.isVisible({ timeout: 3000 })) {
+                    if (await checkTermo.isVisible({ timeout: 5000 })) {
                         await checkTermo.check();
+                        await page.getByRole('checkbox', { name: 'Concordo em disponibilizar' }).check();
                         await page.getByRole('button', { name: 'Enviar' }).click();
                     }
                 } catch (e) { }
 
-                // Contrato
+                // Definir Contrato
                 const inputContrato = page.getByRole('textbox', { name: 'Digite aqui' }).first();
                 await inputContrato.waitFor({ state: 'visible' });
                 await inputContrato.fill(contrato);
                 await page.getByRole('button', { name: 'Definir' }).click();
+                await sleep(3000); // Espera a definição do contrato processar
 
-                // Pequeno delay técnico para o AJAX do site atualizar o contrato na sessão
-                await sleep(2000);
-
-                // Ir para Segunda Via
+                // Acessar Segunda Via
                 const linkSegundaVia = page.getByRole('link', { name: 'Emitir segunda via e' });
-                // Força o clique via JS se o elemento estiver coberto ou animando
-                await linkSegundaVia.click({ force: true });
+                await linkSegundaVia.waitFor({ state: 'visible' });
+                await linkSegundaVia.click();
+                await page.waitForLoadState('networkidle');
 
-                // Aqui usamos um waitForSelector em vez de networkidle para ser mais rápido
-                await page.waitForSelector('#list-bills-segunda-via tbody tr', { timeout: 20000 });
+                // Filtros da Tabela (Apenas Vencidas vs Todas)
+                const checkboxVencidas = page.locator('#apenas-vencidas');
+                if (await checkboxVencidas.count() > 0) {
+                    const isChecked = await checkboxVencidas.isChecked();
+                    // Se quiser ver todas as abertas (vencidas ou a vencer), desmarque se necessário
+                    // ou mantenha conforme regra de negócio. Aqui mantemos o padrão do site.
+                    // Exemplo: Se quiser garantir que vê tudo:
+                    // if (isChecked) await checkboxVencidas.click(); 
+                    await sleep(2000);
+                }
 
-                // --- PASSO 3: SELEÇÃO DA FATURA ---
-                console.log("3. Abrindo fatura...");
+                // --- PASSO 4: SELEÇÃO DA FATURA ---
+                console.log("4. Buscando fatura na tabela...");
                 const faturaRow = page.locator('#list-bills-segunda-via tbody tr').first();
 
-                if (!(await faturaRow.isVisible())) {
-                    console.log("   Nenhuma fatura encontrada.");
+                // Se não houver linhas, não tem fatura
+                if (!(await faturaRow.isVisible({ timeout: 10000 }))) {
+                    console.log("   Nenhuma fatura encontrada na tabela.");
                     await browser.close();
                     return res.json({ status: 'success', message: 'Não existem faturas em aberto.', has_invoice: false });
                 }
 
+                // Abre o Modal clicando no valor
                 await faturaRow.locator('.bill-value').first().click();
 
-                // Aguarda o botão do modal aparecer
+                // Aguarda loader desaparecer
+                try {
+                    const loader = page.getByText('Aguarde');
+                    if (await loader.isVisible({ timeout: 3000 })) await loader.waitFor({ state: 'hidden', timeout: 90000 });
+                } catch (e) { }
+
+                // --- PASSO 5: ESTRATÉGIA CIRÚRGICA (Interceptação de Payload POST) ---
+                console.log("5. Iniciando estratégia: Interceptação de Form Data (Payload 'bill')...");
+
                 const btnVerFaturaModal = page.getByText('Ver Fatura');
-                await btnVerFaturaModal.waitFor({ state: 'visible', timeout: 15000 });
+                await btnVerFaturaModal.waitFor({ state: 'visible', timeout: 90000 });
 
-                // --- PASSO 4: ESTRATÉGIA CIRÚRGICA (INTERCEPTAÇÃO INSTANTÂNEA) ---
-                console.log("4. Capturando Payload POST (Modo Turbo)...");
-
-                // A. Prepara a armadilha para pegar o POST "exibir-faturas"
+                // 1. Preparar a Armadilha (Listener de Requisição)
+                // Vamos capturar a requisição POST que o navegador envia ao abrir o visualizador
                 const requestPromise = context.waitForEvent('request', {
                     predicate: request => {
                         return request.url().includes('exibir-faturas') &&
                             request.method() === 'POST';
                     },
-                    timeout: 15000 // 15s é muito tempo para um clique disparar
+                    timeout: 20000 // 20s para o clique disparar a requisição
                 }).catch(() => null);
 
-                // B. Clica no botão
-                // Não esperamos popup, não esperamos navegação visual. Apenas o clique.
+                // 2. Clicar no Botão
+                console.log("   Clicando em 'Ver Fatura'...");
+                // Não precisamos esperar o popup carregar visualmente, só precisamos que o clique dispare a requisição
                 await btnVerFaturaModal.click();
 
-                // C. Pega os dados "no ar"
+                console.log("   Aguardando disparo da requisição POST...");
+
+                // 3. Capturar os Dados
                 const request = await requestPromise;
+                let finalBase64 = null;
 
-                if (!request) {
-                    throw new Error("A requisição POST com o PDF não foi disparada pelo clique.");
+                if (request) {
+                    console.log("   [SUCESSO] Requisição POST interceptada!");
+
+                    // Obtém o corpo do POST (onde está o 'bill=JVBER...')
+                    const postData = request.postData();
+
+                    if (postData) {
+                        // O corpo vem como "bill=JVBERi0xLjQKJe...", precisamos extrair o valor
+                        // Usamos URLSearchParams para decodificar corretamente caracteres especiais
+                        const params = new URLSearchParams(postData);
+                        const billBase64 = params.get('bill');
+
+                        if (billBase64 && billBase64.startsWith('JVBER')) {
+                            console.log("   [SUCESSO] Base64 do PDF extraído do payload 'bill'.");
+                            finalBase64 = billBase64;
+                        } else {
+                            console.log("   [ERRO] Campo 'bill' não encontrado ou inválido no payload.");
+                        }
+                    } else {
+                        console.log("   [ERRO] A requisição interceptada não tinha corpo (payload).");
+                    }
+                } else {
+                    console.log("   [FALHA] A requisição POST para 'exibir-faturas' não foi detectada.");
                 }
 
-                // D. Extrai o Base64 do corpo da requisição
-                const postData = request.postData();
-                const params = new URLSearchParams(postData);
-                let finalBase64 = params.get('bill');
-
-                if (!finalBase64 || !finalBase64.startsWith('JVBER')) {
-                    throw new Error("O payload interceptado não contém um PDF válido (bill).");
+                // Tenta fechar qualquer popup que tenha aberto (limpeza)
+                const pages = context.pages();
+                if (pages.length > 1) {
+                    await pages[pages.length - 1].close().catch(() => { });
                 }
 
-                // Limpeza final
-                finalBase64 = finalBase64.replace(/\s/g, ''); // Remove quebras de linha/espaços
-                const tamanhoBytes = Buffer.from(finalBase64, 'base64').length;
+                // 4. Validação Final
+                if (!finalBase64) {
+                    throw new Error("Não foi possível extrair o Base64 do payload da requisição.");
+                }
 
-                console.log(`>> SUCESSO! PDF capturado na origem: ${tamanhoBytes} bytes.`);
+                // Verifica se o Base64 precisa de limpeza (espaços ou quebras de linha)
+                finalBase64 = finalBase64.replace(/\s/g, '');
 
-                // Fecha tudo imediatamente (não precisa esperar logout ou renderização)
+                const bufferTamanho = Buffer.from(finalBase64, 'base64').length;
+                console.log(`>> Processo concluído. PDF original recuperado: ${bufferTamanho} bytes.`);
+
                 await browser.close();
 
                 return res.json({
@@ -202,15 +231,10 @@ app.post('/webhook/fatura', async (req, res) => {
                 });
 
             } catch (error) {
+                // --- TRATAMENTO DE ERROS E RETRY ---
                 console.error(`Erro na tentativa ${tentativa}: ${error.message}`);
 
-                // Tenta salvar screenshot do erro apenas se a página existir
-                if (page && !page.isClosed()) {
-                    try {
-                        await page.screenshot({ path: `erro_tentativa_${tentativa}.png` });
-                    } catch (e) { }
-                }
-
+                // Fecha páginas para limpar memória
                 if (page) await page.close().catch(() => { });
                 if (context) await context.close().catch(() => { });
 
@@ -225,8 +249,8 @@ app.post('/webhook/fatura', async (req, res) => {
                     });
                 }
 
-                // Espera curta antes de tentar de novo
-                await sleep(5000);
+                console.log("Reiniciando em 10s...");
+                await sleep(10000);
             }
         }
 
@@ -238,5 +262,5 @@ app.post('/webhook/fatura', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-    console.log(`Servidor Turbo rodando na porta ${PORT}`);
+    console.log(`Servidor de automação rodando na porta ${PORT}`);
 });
