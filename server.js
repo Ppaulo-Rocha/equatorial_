@@ -53,7 +53,7 @@ app.post('/webhook/fatura', async (req, res) => {
                 // 2. Popups/Cookies
                 try {
                     const btnFechar = page.locator('#pm__popup-21883').getByRole('button', { name: 'Fechar' });
-                    if (await btnFechar.isVisible({ timeout: 3000 })) await btnFechar.click();
+                    if (await btnFechar.isVisible({ timeout: 5000 })) await btnFechar.click();
 
                     const checkAviso = page.getByRole('checkbox', { name: 'Li e entendi o Aviso de' });
                     if (await checkAviso.isVisible({ timeout: 3000 })) {
@@ -77,9 +77,14 @@ app.post('/webhook/fatura', async (req, res) => {
                 await sleep(500);
                 await page.getByRole('button', { name: 'Entrar' }).click();
 
-                // Validação
+                // Validação "mov" com timeout estendido para evitar erro na tentativa 3
                 console.log('Validando acesso...');
-                await page.locator('span').filter({ hasText: 'mov' }).first().waitFor({ state: 'visible', timeout: 20000 });
+                try {
+                    await page.locator('span').filter({ hasText: 'mov' }).first().waitFor({ state: 'visible', timeout: 40000 });
+                } catch (e) {
+                    // Se falhar na validação, pode ser lentidão ou popup atrapalhando. Vamos tentar seguir se estiver na URL certa.
+                    if (!page.url().includes('sua-conta')) throw e;
+                }
 
                 // 4. Navegação
                 console.log('Acessando "Sua Conta"...');
@@ -140,65 +145,57 @@ app.post('/webhook/fatura', async (req, res) => {
                 console.log("1. Clicando no valor para abrir modal...");
                 await celulaValor.click();
 
-                console.log("2. Aguardando processamento do modal...");
+                // Espera "Aguarde"
                 try {
                     const loaderAguarde = page.getByText('Aguarde');
                     if (await loaderAguarde.isVisible({ timeout: 5000 })) {
+                        console.log("   Aguardando sistema processar...");
                         await loaderAguarde.waitFor({ state: 'hidden', timeout: 60000 });
                     }
-                    await sleep(1500);
+                    await sleep(1000);
                 } catch (e) { }
 
-                console.log("3. Procurando botão 'Ver Fatura' dentro do modal...");
+                console.log("2. Procurando botão 'Ver Fatura'...");
                 const btnVerFaturaModal = page.getByText('Ver Fatura');
                 await btnVerFaturaModal.waitFor({ state: 'visible', timeout: 15000 });
 
-                console.log("4. Clicando em 'Ver Fatura' para abrir o PDF...");
+                // --- CORREÇÃO PRINCIPAL: INTERCEPTAÇÃO DE RESPOSTA ---
+                console.log("3. Preparando captura de tráfego PDF...");
 
+                // Aqui criamos um "ouvinte" que espera pela resposta de rede contendo o PDF.
+                // Isso pega o arquivo NO MOMENTO que ele carrega, sem precisar baixar de novo.
+                const pdfResponsePromise = context.waitForResponse(response =>
+                    response.url().includes('exibir-faturas') &&
+                    response.status() === 200 &&
+                    (response.headers()['content-type'] === 'application/pdf' || response.headers()['content-type'] === 'application/octet-stream')
+                );
+
+                console.log("4. Clicando no botão final...");
+
+                // Clica no botão que dispara o popup e a requisição
                 const [popup] = await Promise.all([
                     page.waitForEvent('popup'),
                     btnVerFaturaModal.click()
                 ]);
 
-                console.log(">> Popup capturado! Aguardando carregamento...");
-                await popup.waitForLoadState();
+                console.log(">> Popup aberto. Aguardando chegada dos dados de rede...");
 
-                // Pequena pausa para garantir renderização da URL final
-                await sleep(2000);
+                // Espera a Promessa da resposta de rede ser cumprida
+                // (Se demorar mais que 30s, vai dar timeout e cair no catch para tentar de novo)
+                const responsePDF = await pdfResponsePromise;
 
-                const pdfUrl = popup.url();
-                console.log(`>> URL Final Capturada: ${pdfUrl}`);
-
-                // --- NOVA LÓGICA DE VALIDAÇÃO DE DOWNLOAD ---
-                console.log(">> Baixando arquivo para validar...");
-
-                const responsePDF = await context.request.get(pdfUrl);
-
-                // Verifica status HTTP
-                if (!responsePDF.ok()) {
-                    throw new Error(`Falha no download. Status HTTP: ${responsePDF.status()}`);
-                }
-
+                console.log(">> Resposta de rede capturada!");
                 const pdfBuffer = await responsePDF.body();
-                const contentType = responsePDF.headers()['content-type'];
 
-                console.log(`>> Tamanho do arquivo: ${pdfBuffer.length} bytes`);
-                console.log(`>> Tipo do arquivo: ${contentType}`);
+                console.log(`>> Tamanho capturado: ${pdfBuffer.length} bytes`);
 
-                // Validações Críticas
-                if (!pdfBuffer || pdfBuffer.length < 500) {
-                    // Se for menor que 500 bytes, provavelmente é erro ou arquivo vazio
-                    throw new Error("O arquivo baixado está vazio ou corrompido (tamanho insuficiente).");
-                }
-
-                // Opcional: Validar se é PDF mesmo (alguns servidores retornam octet-stream, então o check é flexível)
-                if (contentType && contentType.includes('text/html')) {
-                    throw new Error("A URL retornou uma página HTML em vez do PDF.");
+                // Validação
+                if (pdfBuffer.length < 1000) {
+                    throw new Error("Arquivo capturado inválido ou vazio (menos de 1KB).");
                 }
 
                 const base64PDF = pdfBuffer.toString('base64');
 
-                // Se chegou aqui, o arquivo é válido. Fecha e envia.
                 await browser.close();
 
                 return res.json({
@@ -212,7 +209,6 @@ app.post('/webhook/fatura', async (req, res) => {
             } catch (error) {
                 console.error(`Erro na tentativa ${tentativa}: ${error.message}`);
 
-                // Garante limpeza antes da próxima tentativa
                 if (page) await page.close();
                 if (context) await context.close();
 
@@ -225,8 +221,8 @@ app.post('/webhook/fatura', async (req, res) => {
                         last_error: error.message
                     });
                 }
-                console.log("Reiniciando processo...");
-                await sleep(3000);
+                console.log("Reiniciando processo em 5 segundos...");
+                await sleep(5000); // Aumentei o tempo de espera entre erros para limpar o servidor
             }
         }
 
