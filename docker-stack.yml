@@ -1,0 +1,51 @@
+version: '3.8'
+
+services:
+  equatorial-bot:
+    # Substitua 'equatorial-bot:latest' pelo nome da sua imagem no Docker Hub 
+    # se estiver usando múltiplos nós (ex: seu-usuario/equatorial-bot:latest)
+    image: paulolimal/equatorial:latest
+    environment:
+      - TZ=America/Sao_Paulo
+      - NODE_ENV=production
+      # Se precisar trocar o token sem mexer no código, descomente abaixo e use process.env.AUTH_TOKEN no JS
+      - AUTH_TOKEN=057ebcdc28b0b95cabe45341b209d28d
+    ports:
+      - "2031:3000"
+    deploy:
+      replicas: 1
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+        window: 120s
+      resources:
+        limits:
+          # Playwright consome bastante CPU/RAM ao abrir o navegador
+          cpus: '2.0'
+          memory: 2G
+        reservations:
+          cpus: '0.5'
+          memory: 512M
+      # Configurações de update sem downtime (se você escalar para >1 réplica)
+      update_config:
+        parallelism: 1
+        delay: 10s
+        order: start-first
+    
+    # Healthcheck para o Swarm saber se o serviço travou
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+    
+    networks:
+      - bot-net
+
+networks:
+  bot-net:
+    driver: overlay
+
+

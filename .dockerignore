@@ -1,0 +1,9 @@
+node_modules
+npm-debug.log
+Dockerfile
+docker-compose.yml
+docker-stack.yml
+README.md
+.git
+.gitignore
+erro_tentativa_*.png

@@ -63,46 +63,132 @@ O servidor estará rodando e escutando na porta configurada.
 A requisição deve incluir um cabeçalho de autorização com um Bearer Token.
 
 - **Header**: `Authorization`
-- **Value**: `Bearer seu-token-secreto` (substitua pelo token configurado em `server.js`)
+- **Value**:# Equatorial Bot - Automação de Download de Faturas
 
-### Corpo da Requisição (Body)
+Bot automatizado para download de faturas da Agência Virtual Equatorial Energia usando Playwright com técnicas anti-detecção.
 
-A requisição deve ser do tipo `application/json` e conter os seguintes campos:
+## 🚀 Features
 
+- ✅ Autenticação automática
+- ✅ Seleção de conta por número
+- ✅ Download de fatura em PDF (base64)
+- ✅ Modo headless com stealth plugin
+- ✅ API REST com autenticação por token
+- ✅ Retry automático (3 tentativas)
+- ✅ Screenshots de erro para debug
+- ✅ Docker & Docker Swarm ready
+
+## 📦 Deploy Rápido
+
+### Docker Compose (Desenvolvimento)
+
+```bash
+docker-compose up -d
+```
+
+### Docker Swarm (Produção)
+
+```bash
+# Deploy da stack
+docker stack deploy -c docker-stack.yml equatorial
+
+# Verificar status
+docker stack services equatorial
+
+# Ver logs
+docker service logs equatorial_equatorial-bot -f
+```
+
+**Imagem Docker Hub**: `paulolimal/equatorial:latest`
+
+## 🔧 API Usage
+
+### Endpoint
+```
+POST http://SEU-IP:2031/webhook/fatura
+```
+
+### Headers
+```
+Authorization: Bearer 057ebcdc28b0b95cabe45341b209d28d
+Content-Type: application/json
+```
+
+### Request Body
 ```json
 {
-  "cnpj": "15.070.244/0001-18",
   "email": "adm.financeiro@mov.pro.br",
-  "contrato": "003026429560"
+  "senha": "Movfibra15070@",
+  "conta": "003014474705"
 }
 ```
 
-- `cnpj` (opcional): CNPJ usado para o login. Se não for fornecido, usa um valor padrão.
-- `email` (opcional): E-mail usado para o login. Se não for fornecido, usa um valor padrão.
-- `contrato` (**obrigatório**): O número da "Conta Contrato" da fatura que você deseja baixar.
-
-### Resposta de Sucesso (com fatura)
-
+### Response Success
 ```json
 {
-    "status": "success",
-    "has_invoice": true,
-    "contract": "003026429560",
-    "filename": "fatura_003026429560.pdf",
-    "file_base64": "JVBERi0xLjQKJeLjz9MKMSAwIG9iago8PC9UeXBlL0NhdGFsb2cvUGFnZXMgMiAwIFIvTGFuZ..."
+  "status": "success",
+  "has_invoice": true,
+  "account": "003014474705",
+  "filename": "fatura_003014474705.pdf",
+  "file_base64": "JVBERi0xLjQKJ..."
 }
 ```
 
-### Resposta de Sucesso (sem fatura encontrada)
-
+### Response No Invoice
 ```json
 {
-    "status": "success",
-    "message": "Não foram encontradas faturas em aberto para o contrato 003026429560.",
-    "has_invoice": false
+  "status": "success",
+  "message": "Não existem faturas em aberto.",
+  "has_invoice": false
 }
 ```
 
+## 🛠️ Configuração
+
+### Variáveis de Ambiente
+
+- `AUTH_TOKEN`: Token de autenticação da API (padrão: `057ebcdc28b0b95cabe45341b209d28d`)
+- `NODE_ENV`: Ambiente (padrão: `production`)
+- `TZ`: Timezone (padrão: `America/Sao_Paulo`)
+
+### Portas
+
+- **Container**: 3000
+- **Host**: 2031
+
+## 📋 Recursos do Docker Swarm
+
+- **Replicas**: 1 (escalável)
+- **CPU Limit**: 2.0 cores
+- **Memory Limit**: 2GB
+- **CPU Reservation**: 0.5 cores
+- **Memory Reservation**: 512MB
+- **Healthcheck**: A cada 30s
+- **Restart Policy**: on-failure (3 tentativas)
+- **Network**: overlay (bot-net)
+
+## 🔍 Monitoramento
+
+```bash
+# Status dos serviços
+docker service ps equatorial_equatorial-bot
+
+# Logs em tempo real
+docker service logs equatorial_equatorial-bot -f --tail 50
+
+# Healthcheck
+curl http://localhost:2031/
+# Resposta: "Equatorial Bot Online 🤖"
+```
+
+## 🐛 Debug
+
+Screenshots de erro são salvos em `./screenshots/erro_tentativa_X.png` quando há falhas.
+
+## 📚 Documentação Adicional
+
+- **Deploy Guide**: Ver arquivo `DEPLOY.md` para instruções detalhadas
+- **Walkthrough**: Ver arquivo `walkthrough.md` para detalhes técnicos
 ### Resposta de Erro
 
 ```json
