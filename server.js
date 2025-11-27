@@ -11,7 +11,7 @@ const app = express();
 app.use(express.json());
 
 // --- CONFIGURAÇÕES ---
-const PORT = 3000;
+const PORT = 2032;
 const AUTH_TOKEN = process.env.AUTH_TOKEN || '057ebcdc28b0b95cabe45341b209d28d';
 const MAX_TENTATIVAS = 3;
 
@@ -43,7 +43,7 @@ app.post('/webhook/fatura', async (req, res) => {
 
     try {
         browser = await chromium.launch({
-            headless: true, // Agora com stealth plugin funcionará em headless
+            headless: true,
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
@@ -71,7 +71,6 @@ app.post('/webhook/fatura', async (req, res) => {
                     locale: 'pt-BR',
                     timezoneId: 'America/Sao_Paulo',
                     ignoreHTTPSErrors: true,
-                    // Headers adicionais para parecer mais realista
                     extraHTTPHeaders: {
                         'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
                         'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -86,27 +85,16 @@ app.post('/webhook/fatura', async (req, res) => {
 
                 // Injeta scripts para esconder traços de automação
                 await page.addInitScript(() => {
-                    // Remove navigator.webdriver
                     Object.defineProperty(navigator, 'webdriver', {
                         get: () => undefined
                     });
-
-                    // Mock de plugins
                     Object.defineProperty(navigator, 'plugins', {
                         get: () => [1, 2, 3, 4, 5]
                     });
-
-                    // Mock de languages
                     Object.defineProperty(navigator, 'languages', {
                         get: () => ['pt-BR', 'pt', 'en-US', 'en']
                     });
-
-                    // Chrome runtime
-                    window.chrome = {
-                        runtime: {}
-                    };
-
-                    // Permissions
+                    window.chrome = { runtime: {} };
                     const originalQuery = window.navigator.permissions.query;
                     window.navigator.permissions.query = (parameters) => (
                         parameters.name === 'notifications' ?
@@ -120,15 +108,12 @@ app.post('/webhook/fatura', async (req, res) => {
                     waitUntil: 'networkidle',
                     timeout: 60000
                 });
-
-                // Aguarda um pouco para simular comportamento humano
                 await sleep(2000);
 
                 // Destruição de Popups
                 await page.addStyleTag({
-                    content: `
-                    #pm__popup-21883, .pm__popup, .pm__overlay { display: none !important; visibility: hidden !important; pointer-events: none !important; z-index: -9999 !important; }
-                `});
+                    content: `#pm__popup-21883, .pm__popup, .pm__overlay { display: none !important; visibility: hidden !important; pointer-events: none !important; z-index: -9999 !important; }`
+                });
 
                 // Cookies
                 try {
@@ -154,27 +139,42 @@ app.post('/webhook/fatura', async (req, res) => {
                 await inputIdentificacao.waitFor({ state: 'visible', timeout: 10000 });
                 await inputIdentificacao.click();
                 await sleep(300);
-                // Digita com delay humano
                 await inputIdentificacao.type(email, { delay: 100 });
                 console.log('   Email preenchido');
                 await sleep(800);
 
-                // Passo 3: Clica em Continuar (precisa clicar 2 vezes - bug do site)
-                const btnContinuar = page.getByRole('button', { name: 'Continuar' });
+                // Passo 3: Clica em Continuar (loop até senha aparecer)
+                console.log('   Tentando clicar em Continuar...');
+                let senhaVisivel = false;
 
-                // Primeira tentativa (geralmente falha)
-                try {
-                    await btnContinuar.click();
-                    console.log('   Botão Continuar clicado (tentativa 1)');
-                    await sleep(800);
-                } catch (e) {
-                    console.log('   Primeira tentativa de Continuar falhou (esperado)');
+                for (let i = 1; i <= 3; i++) {
+                    try {
+                        const btnContinuar = page.getByRole('button', { name: 'Continuar' });
+
+                        if (await btnContinuar.isVisible({ timeout: 2000 })) {
+                            await btnContinuar.click();
+                            console.log(`   Continuar clicado (tentativa ${i})`);
+                            await sleep(1500);
+
+                            // Verifica se campo de senha apareceu
+                            const inputSenha = page.getByRole('textbox', { name: 'Senha' });
+                            if (await inputSenha.isVisible({ timeout: 2000 })) {
+                                console.log('   ✓ Campo de senha apareceu!');
+                                senhaVisivel = true;
+                                break;
+                            }
+                        } else {
+                            console.log('   Botão Continuar não está mais visível');
+                            break;
+                        }
+                    } catch (e) {
+                        console.log(`   Tentativa ${i} erro: ${e.message}`);
+                    }
                 }
 
-                // Segunda tentativa (deve funcionar)
-                await btnContinuar.click();
-                await sleep(2000);
-                console.log('   Botão Continuar clicado (tentativa 2)');
+                if (!senhaVisivel) {
+                    throw new Error('Campo de senha não apareceu após múltiplas tentativas');
+                }
 
                 // Passo 4: Preenche a senha
                 const inputSenha = page.getByRole('textbox', { name: 'Senha' });
@@ -242,7 +242,7 @@ app.post('/webhook/fatura', async (req, res) => {
             } catch (error) {
                 console.error(`Erro na tentativa ${tentativa}: ${error.message}`);
 
-                // --- DEBUG: Screenshot do erro ---
+                // DEBUG: Screenshot do erro
                 if (page) {
                     try {
                         const screenshotDir = './screenshots';
