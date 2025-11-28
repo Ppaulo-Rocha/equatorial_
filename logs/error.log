@@ -4,3 +4,15 @@
 2025-11-28 09:04:50 [ERROR]: Erro ao buscar contas: Resposta do webhook não é um array
 2025-11-28 09:05:35 [ERROR]: Erro ao buscar contas: Request failed with status code 500
 2025-11-28 09:11:01 [ERROR]: Erro ao buscar contas: Resposta do webhook não é um array
+2025-11-28 15:26:52 [ERROR]: Erro ao enviar fatura da conta undefined: Request failed with status code 500
+2025-11-28 15:26:52 [ERROR]: ✗ Erro ao processar conta 003026429560: Request failed with status code 500
+2025-11-28 15:28:03 [ERROR]: Erro ao enviar fatura da conta undefined: Request failed with status code 500
+2025-11-28 15:28:03 [ERROR]: ✗ Erro ao processar conta 003030844202: Request failed with status code 500
+2025-11-28 15:29:08 [ERROR]: Erro ao enviar fatura da conta undefined: Request failed with status code 500
+2025-11-28 15:29:08 [ERROR]: ✗ Erro ao processar conta 003031130114: Request failed with status code 500
+2025-11-28 15:30:17 [ERROR]: Erro ao enviar fatura da conta undefined: Request failed with status code 500
+2025-11-28 15:30:17 [ERROR]: ✗ Erro ao processar conta 003031161290: Request failed with status code 500
+2025-11-28 15:31:29 [ERROR]: Erro ao enviar fatura da conta undefined: Request failed with status code 500
+2025-11-28 15:31:29 [ERROR]: ✗ Erro ao processar conta 003031684853: Request failed with status code 500
+2025-11-28 15:32:39 [ERROR]: Erro ao enviar fatura da conta undefined: Request failed with status code 500
+2025-11-28 15:32:39 [ERROR]: ✗ Erro ao processar conta 003014474713: Request failed with status code 500

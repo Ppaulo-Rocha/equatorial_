@@ -265,3 +265,53 @@
 2025-11-28 15:25:47 [INFO]: Processando conta 003026429560 (ID: 20)
 2025-11-28 15:25:47 [INFO]: Email: adm.financeiro@mov.pro.br
 2025-11-28 15:25:47 [INFO]: ============================================================
+2025-11-28 15:26:49 [INFO]: Enviando fatura da conta undefined para webhook...
+2025-11-28 15:26:52 [ERROR]: Erro ao enviar fatura da conta undefined: Request failed with status code 500
+2025-11-28 15:26:52 [ERROR]: ✗ Erro ao processar conta 003026429560: Request failed with status code 500
+2025-11-28 15:26:57 [INFO]: 
+============================================================
+2025-11-28 15:26:57 [INFO]: Processando conta 003030844202 (ID: 25)
+2025-11-28 15:26:57 [INFO]: Email: adm.financeiro@mov.pro.br
+2025-11-28 15:26:57 [INFO]: ============================================================
+2025-11-28 15:28:00 [INFO]: Enviando fatura da conta undefined para webhook...
+2025-11-28 15:28:03 [ERROR]: Erro ao enviar fatura da conta undefined: Request failed with status code 500
+2025-11-28 15:28:03 [ERROR]: ✗ Erro ao processar conta 003030844202: Request failed with status code 500
+2025-11-28 15:28:08 [INFO]: 
+============================================================
+2025-11-28 15:28:08 [INFO]: Processando conta 003031130114 (ID: 28)
+2025-11-28 15:28:08 [INFO]: Email: adm.financeiro@mov.pro.br
+2025-11-28 15:28:08 [INFO]: ============================================================
+2025-11-28 15:29:05 [INFO]: Enviando fatura da conta undefined para webhook...
+2025-11-28 15:29:08 [ERROR]: Erro ao enviar fatura da conta undefined: Request failed with status code 500
+2025-11-28 15:29:08 [ERROR]: ✗ Erro ao processar conta 003031130114: Request failed with status code 500
+2025-11-28 15:29:13 [INFO]: 
+============================================================
+2025-11-28 15:29:13 [INFO]: Processando conta 003031161290 (ID: 29)
+2025-11-28 15:29:13 [INFO]: Email: adm.financeiro@mov.pro.br
+2025-11-28 15:29:13 [INFO]: ============================================================
+2025-11-28 15:30:15 [INFO]: Enviando fatura da conta undefined para webhook...
+2025-11-28 15:30:17 [ERROR]: Erro ao enviar fatura da conta undefined: Request failed with status code 500
+2025-11-28 15:30:17 [ERROR]: ✗ Erro ao processar conta 003031161290: Request failed with status code 500
+2025-11-28 15:30:22 [INFO]: 
+============================================================
+2025-11-28 15:30:22 [INFO]: Processando conta 003031684853 (ID: 40)
+2025-11-28 15:30:22 [INFO]: Email: adm.financeiro@mov.pro.br
+2025-11-28 15:30:22 [INFO]: ============================================================
+2025-11-28 15:31:26 [INFO]: Enviando fatura da conta undefined para webhook...
+2025-11-28 15:31:29 [ERROR]: Erro ao enviar fatura da conta undefined: Request failed with status code 500
+2025-11-28 15:31:29 [ERROR]: ✗ Erro ao processar conta 003031684853: Request failed with status code 500
+2025-11-28 15:31:34 [INFO]: 
+============================================================
+2025-11-28 15:31:34 [INFO]: Processando conta 003014474713 (ID: 9)
+2025-11-28 15:31:34 [INFO]: Email: adm.financeiro@mov.pro.br
+2025-11-28 15:31:34 [INFO]: ============================================================
+2025-11-28 15:32:36 [INFO]: Enviando fatura da conta undefined para webhook...
+2025-11-28 15:32:39 [ERROR]: Erro ao enviar fatura da conta undefined: Request failed with status code 500
+2025-11-28 15:32:39 [ERROR]: ✗ Erro ao processar conta 003014474713: Request failed with status code 500
+2025-11-28 15:32:44 [INFO]: 
+############################################################
+2025-11-28 15:32:44 [INFO]: CICLO FINALIZADO - Duração: 418s
+2025-11-28 15:32:44 [INFO]: Total: 6 | Sucesso: 0 | Sem fatura: 0 | Falha: 6
+2025-11-28 15:32:44 [INFO]: Próxima verificação em 24 hora(s)
+2025-11-28 15:32:44 [INFO]: ############################################################
+
