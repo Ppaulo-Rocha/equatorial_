@@ -11,7 +11,7 @@ const app = express();
 app.use(express.json());
 
 // --- CONFIGURAÇÕES ---
-const PORT = 2032;
+const PORT = 2031;
 const AUTH_TOKEN = process.env.AUTH_TOKEN || '057ebcdc28b0b95cabe45341b209d28d';
 const MAX_TENTATIVAS = 3;
 
