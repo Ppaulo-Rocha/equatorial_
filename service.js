@@ -112,21 +112,26 @@ async function enviarFatura(faturaData) {
  * @param {Object} contaInfo - Informações da conta do webhook
  */
 async function processarConta(contaInfo) {
-    const { conta, id } = contaInfo;
+    const { conta, id, email, senha } = contaInfo;
+
+    // Usa credenciais da conta ou fallback para as padrões
+    const emailLogin = email || contaInfo['e-mail'] || EMAIL_DEFAULT;
+    const senhaLogin = senha || SENHA_DEFAULT;
 
     try {
         logger.info(`\n${'='.repeat(60)}`);
         logger.info(`Processando conta ${conta} (ID: ${id})`);
+        logger.info(`Email: ${emailLogin}`);
         logger.info(`${'='.repeat(60)}`);
 
-        // Faz o download da fatura
-        const resultado = await downloadInvoice(EMAIL_DEFAULT, SENHA_DEFAULT, conta);
+        // Faz o download da fatura usando credenciais da conta
+        const resultado = await downloadInvoice(emailLogin, senhaLogin, conta);
 
         if (resultado.status === 'success' && resultado.has_invoice) {
             // Prepara dados para envio
             const faturaData = {
                 conta: resultado.account,
-                email: EMAIL_DEFAULT,
+                email: emailLogin,
                 status: resultado.status,
                 filename: resultado.filename,
                 file_base64: resultado.file_base64,
