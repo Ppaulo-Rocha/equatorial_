@@ -1,5 +1,10 @@
 node_modules
 npm-debug.log
+.env
+logs
+browsers
+screenshots
+dashboard-data.json
 Dockerfile
 docker-compose.yml
 docker-stack.yml

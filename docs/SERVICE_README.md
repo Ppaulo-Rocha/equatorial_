@@ -1,251 +1,73 @@
-# Serviço Windows - Equatorial Auto Invoice
+# Serviço Windows — Equatorial Auto Invoice
 
-Este documento descreve como instalar, configurar e gerenciar o serviço Windows para download automático de faturas da Equatorial.
+Este projeto pode rodar de 2 formas:
 
-## 📋 Visão Geral
+- **Serviço (recomendado)**: `service.js` — agenda ciclos, integra com n8n e expõe o dashboard.
+- **API manual**: `server.js` — útil para testes do `POST /webhook/fatura`.
 
-O **EquatorialAutoInvoice** é um serviço Windows que:
-- ✅ Inicia automaticamente com o Windows
-- ✅ Roda em segundo plano (sem interface gráfica)
-- ✅ Verifica contas a cada 24 horas (configurável)
-- ✅ Busca lista de contas de um webhook
-- ✅ Faz download automático de faturas em aberto
-- ✅ Envia faturas para webhook de destino
-- ✅ Gera logs detalhados de todas operações
+## Pré-requisitos
 
-## 🚀 Instalação
+- Windows 10/11 (ou Windows Server)
+- Node.js `>=16`
+- Permissões de administrador (apenas para instalar/remover o serviço)
 
-### Pré-requisitos
+## Configuração
 
-- Windows 10/11 ou Windows Server
-- Node.js v16 ou superior
-- Permissões de administrador
+Crie um `.env` (não versionado) baseado em `.env.example`.
 
-### Passo a Passo
+Variáveis principais:
 
-1. **Instalar dependências**:
-   ```bash
-   npm install
-   ```
+- `PORT` (padrão: `2032`)
+- `AUTH_TOKEN` (token Bearer obrigatório no `POST /webhook/fatura`)
+- `WEBHOOK_CONTAS_URL` (entrada: lista de contas)
+- `WEBHOOK_ENVIO_URL` (saída: envio da fatura + dados extraídos)
+- `EMAIL_DEFAULT` / `SENHA_DEFAULT` (fallback se o webhook não enviar credenciais)
+- `CHECK_INTERVAL_HOURS` (intervalo do ciclo em horas)
+- `LOG_LEVEL`
 
-2. **Configurar variáveis de ambiente** (opcional):
-   
-   Edite o arquivo `.env` se necessário:
-   ```env
-   WEBHOOK_CONTAS_URL=https://n8n.svd.tec.br/webhook/contas_contratos
-   WEBHOOK_ENVIO_URL=https://n8n.svd.tec.br/webhook/contas
-   EMAIL_DEFAULT=adm.financeiro@mov.pro.br
-   SENHA_DEFAULT=Movfibra15070@
-   CHECK_INTERVAL_HOURS=24
-   LOG_LEVEL=info
-   ```
+## Instalar browsers do Playwright
 
-3. **Instalar o navegador Playwright** (se ainda não instalou):
-   ```bash
-   npx playwright install chromium
-   ```
+Se a máquina ainda não tiver o Chromium do Playwright:
 
-4. **Instalar o serviço Windows** (como Administrador):
-   ```bash
-   npm run install-service
-   ```
-
-5. **Verificar instalação**:
-   - Pressione `Win + R`
-   - Digite `services.msc` e pressione Enter
-   - Procure por "EquatorialAutoInvoice"
-   - O serviço deve estar com status "Em execução"
-
-## ⚙️ Configuração
-
-### Variáveis de Ambiente
-
-| Variável | Descrição | Padrão |
-|----------|-----------|--------|
-| `WEBHOOK_CONTAS_URL` | URL do webhook que retorna lista de contas | `https://n8n.svd.tec.br/webhook/contas_contratos` |
-| `WEBHOOK_ENVIO_URL` | URL do webhook para envio das faturas | `https://n8n.svd.tec.br/webhook/contas` |
-| `EMAIL_DEFAULT` | Email para login na Equatorial | `adm.financeiro@mov.pro.br` |
-| `SENHA_DEFAULT` | Senha para login na Equatorial | `Movfibra15070@` |
-| `CHECK_INTERVAL_HOURS` | Intervalo entre verificações (em horas) | `24` |
-| `LOG_LEVEL` | Nível de log (error, warn, info, debug) | `info` |
-
-### Formato do Webhook de Entrada
-
-O webhook `WEBHOOK_CONTAS_URL` deve retornar um array JSON:
-
-```json
-[
-  {
-    "conta": "003031650100",
-    "id": 39,
-    "ultima_verificacao": "2025-11-24T06:00:00.000Z",
-    "proxima_verificacao": "2025-11-25T06:00:00.000Z"
-  },
-  {
-    "conta": "003031476819",
-    "id": 38,
-    "ultima_verificacao": "2025-11-24T06:00:00.000Z",
-    "proxima_verificacao": "2025-11-25T06:00:00.000Z"
-  }
-]
-```
-
-### Formato de Envio para Webhook
-
-O serviço envia para `WEBHOOK_ENVIO_URL`:
-
-```json
-{
-  "conta": "003031650100",
-  "email": "adm.financeiro@mov.pro.br",
-  "status": "success",
-  "filename": "fatura_003031650100.pdf",
-  "file_base64": "JVBERi0xLjQK...",
-  "conta_id": 39,
-  "processado_em": "2025-11-28T11:30:00.000Z"
-}
-```
-
-## 📊 Monitoramento
-
-### Logs
-
-Os logs são salvos em `./logs/`:
-- `service.log` - Logs gerais de operação
-- `error.log` - Apenas erros
-
-**Visualizar logs em tempo real**:
 ```bash
-# Windows PowerShell
-Get-Content .\logs\service.log -Wait -Tail 50
+npx playwright install chromium
 ```
 
-### Status do Serviço
+## Rodar em modo console (sem instalar serviço)
 
-**Via interface gráfica**:
-1. Abra `services.msc` (Win+R)
-2. Procure "EquatorialAutoInvoice"
-3. Veja status, tipo de inicialização, etc.
-
-**Via linha de comando**:
 ```bash
-sc query EquatorialAutoInvoice
+npm run service
 ```
 
-## 🔧 Gerenciamento
+Dashboard: `http://localhost:2032`
 
-### Parar o Serviço
+## Instalar como Serviço Windows
+
+Execute como Administrador:
+
 ```bash
-sc stop EquatorialAutoInvoice
+npm run install-service
 ```
 
-### Iniciar o Serviço
-```bash
-sc start EquatorialAutoInvoice
-```
+Para remover:
 
-### Reiniciar o Serviço
-```bash
-sc stop EquatorialAutoInvoice && sc start EquatorialAutoInvoice
-```
-
-### Desinstalar o Serviço
 ```bash
 npm run uninstall-service
 ```
 
-## 🧪 Testes
+## Rotas
 
-### Testar Manualmente (sem instalar como serviço)
+- `GET /health`
+- `GET /api/status`
+- `GET /api/logs`
+- `POST /api/run` (apenas no modo `service.js`)
+- `POST /api/config` (apenas no modo `service.js`)
+- `POST /webhook/fatura` (requer `Authorization: Bearer <AUTH_TOKEN>`)
 
-```bash
-node service.js
-```
+## Logs e arquivos de runtime
 
-Isso executará o serviço em modo de console, permitindo ver os logs em tempo real.
+- Logs: `./logs/service.log` e `./logs/error.log`
+- Estado do dashboard: `./dashboard-data.json`
 
-### Testar a API Express (modo legado)
+Esses arquivos/pastas ficam fora do Git.
 
-O servidor Express continua disponível para testes manuais:
-
-```bash
-npm start
-```
-
-Então faça uma requisição:
-```bash
-curl -X POST http://localhost:2031/webhook/fatura \
-  -H "Authorization: Bearer 057ebcdc28b0b95cabe45341b209d28d" \
-  -H "Content-Type: application/json" \
-  -d "{\"conta\": \"003014474705\"}"
-```
-
-## 🐛 Troubleshooting
-
-### Serviço não inicia
-
-1. Verifique os logs em `./logs/error.log`
-2. Confirme que todas as dependências foram instaladas
-3. Verifique se o Chromium do Playwright foi instalado: `npx playwright install chromium`
-
-### Contas não são processadas
-
-1. Verifique se o webhook de contas está acessível
-2. Teste a URL do webhook manualmente:
-   ```bash
-   curl https://n8n.svd.tec.br/webhook/contas_contratos
-   ```
-3. Verifique os logs para ver erros específicos
-
-### Faturas não são enviadas
-
-1. Verifique se o webhook de envio está acessível
-2. Confirme que o formato da fatura está correto
-3. Verifique logs de erro
-
-### Serviço consome muita memória
-
-1. Reduza a frequência de verificação (aumente `CHECK_INTERVAL_HOURS`)
-2. Verifique se há vazamentos de memória nos logs
-3. Reinicie o serviço periodicamente via agendador de tarefas do Windows
-
-## 📁 Estrutura de Arquivos
-
-```
-equatorial_11/
-├── automation.js           # Módulo de automação Playwright
-├── service.js             # Serviço principal (background)
-├── server.js              # API Express (para testes manuais)
-├── install-service.js     # Script de instalação do serviço
-├── uninstall-service.js   # Script de desinstalação
-├── .env                   # Variáveis de ambiente
-├── .env.example           # Template de configuração
-├── logs/                  # Diretório de logs
-│   ├── service.log
-│   └── error.log
-└── package.json
-```
-
-## ⚠️ Notas Importantes
-
-- O serviço roda com as permissões do usuário que o instalou
-- Certifique-se de que as credenciais no `.env` estão corretas
-- Logs são rotacionados automaticamente (máximo 5MB por arquivo)
-- O primeiro ciclo de verificação inicia imediatamente após o serviço iniciar
-- Após cada ciclo, o serviço aguarda o intervalo configurado antes do próximo
-
-## 🔄 Atualizações
-
-Para atualizar o código do serviço:
-
-1. Desinstale o serviço:
-   ```bash
-   npm run uninstall-service
-   ```
-
-2. Atualize os arquivos de código
-
-3. Reinstale o serviço:
-   ```bash
-   npm run install-service
-   ```

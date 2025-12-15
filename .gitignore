@@ -13,8 +13,14 @@ yarn-error.log*
 logs/
 *.log
 
+# Dashboard runtime state
+dashboard-data.json
+
 # Screenshots
 screenshots/
+
+# Playwright browsers
+browsers/
 
 # OS
 .DS_Store
