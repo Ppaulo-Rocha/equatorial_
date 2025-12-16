@@ -4,11 +4,11 @@
   "description": "Serviço Windows automático para download de faturas da Equatorial",
   "main": "service.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node service.js",
     "service": "node service.js",
     "install-service": "node install-service.js",
     "uninstall-service": "node uninstall-service.js",
-    "test": "node server.js"
+    "test": "node service.js"
   },
   "keywords": [
     "equatorial",

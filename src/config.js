@@ -22,7 +22,7 @@ function loadConfig(env = process.env) {
     webhookContasUrl: (env.WEBHOOK_CONTAS_URL || 'https://n8n.svd.tec.br/webhook/contas_contratos').trim(),
     webhookEnvioUrl: (env.WEBHOOK_ENVIO_URL || 'https://n8n.svd.tec.br/webhook/contas').trim(),
 
-    checkIntervalHours: parseIntEnv(env.CHECK_INTERVAL_HOURS, 24),
+    checkIntervalMinutes: parseIntEnv(env.CHECK_INTERVAL_MINUTES, 30),
     emailDefault: (env.EMAIL_DEFAULT || '').trim(),
     senhaDefault: (env.SENHA_DEFAULT || '').trim(),
 

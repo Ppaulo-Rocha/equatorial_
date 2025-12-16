@@ -40,27 +40,27 @@ function isContaJaPaga(dadosExtraidos) {
   return { paga: false, motivo: '' };
 }
 
-function computeNextRunISOString(intervalHours) {
-  return new Date(Date.now() + intervalHours * 60 * 60 * 1000).toISOString();
+function computeNextRunISOString(intervalMinutes) {
+  return new Date(Date.now() + intervalMinutes * 60 * 1000).toISOString();
 }
 
 function createServiceRunner({ config, logger, dashboardState }) {
   let running = false;
   let intervalTimer = null;
-  let currentInterval = config.checkIntervalHours;
+  let currentInterval = config.checkIntervalMinutes;
 
   const saved = dashboardState.read();
   const savedInterval = saved?.config?.interval;
   if (Number.isFinite(savedInterval) && savedInterval >= 1 && savedInterval <= 168) {
     currentInterval = savedInterval;
-    logger.info(`Intervalo carregado do estado salvo: ${currentInterval} hora(s)`);
+    logger.info(`Intervalo carregado do estado salvo: ${currentInterval} minuto(s)`);
   }
 
   function isRunning() {
     return running;
   }
 
-  function getIntervalHours() {
+  function getIntervalMinutes() {
     return currentInterval;
   }
 
@@ -71,15 +71,15 @@ function createServiceRunner({ config, logger, dashboardState }) {
 
   function startSchedule() {
     clearSchedule();
-    const intervaloMs = currentInterval * 60 * 60 * 1000;
+    const intervaloMs = currentInterval * 60 * 1000;
     intervalTimer = setInterval(() => {
       runCycle().catch((err) => logger.error(`Erro no ciclo agendado: ${err.message}`));
     }, intervaloMs);
-    logger.info(`Agendamento configurado para ${currentInterval} hora(s)`);
+    logger.info(`Agendamento configurado para ${currentInterval} minuto(s)`);
   }
 
-  function setIntervalHours(newIntervalHours) {
-    currentInterval = newIntervalHours;
+  function setIntervalMinutes(newIntervalMinutes) {
+    currentInterval = newIntervalMinutes;
     dashboardState.save({
       config: {
         ...(dashboardState.read()?.config || {}),
@@ -196,8 +196,7 @@ function createServiceRunner({ config, logger, dashboardState }) {
             const dadosExtraidos = await extractInvoiceData(resultado.file_base64);
 
             logger.info(
-              `Dados extraídos: NF=${dadosExtraidos.nota_fiscal || 'N/A'}, Valor=${
-                dadosExtraidos.valor || 'N/A'
+              `Dados extraídos: NF=${dadosExtraidos.nota_fiscal || 'N/A'}, Valor=${dadosExtraidos.valor || 'N/A'
               }, Vencimento=${dadosExtraidos.data_vencimento || 'N/A'}`,
             );
 
@@ -249,7 +248,7 @@ function createServiceRunner({ config, logger, dashboardState }) {
       logger.info(
         `Total: ${resultados.total} | Sucesso: ${resultados.sucesso} | Sem fatura: ${resultados.sem_fatura} | Falha: ${resultados.falha}`,
       );
-      logger.info(`Próxima verificação em ${currentInterval} hora(s)`);
+      logger.info(`Próxima verificação em ${currentInterval} minuto(s)`);
       logger.info(`${'#'.repeat(60)}\n`);
 
       dashboardState.save({
@@ -276,8 +275,8 @@ function createServiceRunner({ config, logger, dashboardState }) {
 
   return {
     isRunning,
-    getIntervalHours,
-    setIntervalHours,
+    getIntervalMinutes,
+    setIntervalMinutes,
     startSchedule,
     runCycle,
     runCycleInBackground,

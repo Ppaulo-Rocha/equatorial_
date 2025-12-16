@@ -25,7 +25,7 @@ equatorial_11/
 ├─ automation.js             # Automação Playwright (Equatorial)
 ├─ pdfExtractor.js           # Extração de dados do PDF (pdf2json)
 ├─ service.js                # Entry-point do serviço (agendamento + dashboard)
-├─ server.js                 # Entry-point API manual (testes)
+
 ├─ install-service.js        # Instala como serviço Windows (node-windows)
 ├─ uninstall-service.js      # Remove o serviço Windows
 ├─ package.json

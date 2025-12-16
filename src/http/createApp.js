@@ -43,18 +43,18 @@ function createApp({ config, logger, dashboardState, runner, downloadInvoice }) 
     });
   }
 
-  if (runner?.setIntervalHours && runner?.getIntervalHours) {
+  if (runner?.setIntervalMinutes && runner?.getIntervalMinutes) {
     app.post('/api/config', (req, res) => {
       try {
-        const { intervalHours } = req.body || {};
-        const parsed = Number.parseInt(String(intervalHours), 10);
-        if (!Number.isFinite(parsed) || parsed < 1 || parsed > 168) {
-          return res.status(400).json({ error: 'Intervalo deve ser entre 1 e 168 horas' });
+        const { intervalMinutes } = req.body || {};
+        const parsed = Number.parseInt(String(intervalMinutes), 10);
+        if (!Number.isFinite(parsed) || parsed < 5 || parsed > 10080) {
+          return res.status(400).json({ error: 'Intervalo deve ser entre 5 e 10080 minutos' });
         }
 
-        runner.setIntervalHours(parsed);
-        logger?.info(`Intervalo atualizado para ${parsed} hora(s)`);
-        return res.json({ message: 'Configuração atualizada com sucesso', intervalHours: parsed });
+        runner.setIntervalMinutes(parsed);
+        logger?.info(`Intervalo atualizado para ${parsed} minuto(s)`);
+        return res.json({ message: 'Configuração atualizada com sucesso', intervalMinutes: parsed });
       } catch (error) {
         return res.status(500).json({ error: error.message });
       }

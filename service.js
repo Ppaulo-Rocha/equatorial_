@@ -7,8 +7,8 @@ const { createServiceRunner } = require('./src/serviceRunner');
 const { createApp } = require('./src/http/createApp');
 const { downloadInvoice } = require('./automation');
 
-function computeNextRunISOString(intervalHours) {
-  return new Date(Date.now() + intervalHours * 60 * 60 * 1000).toISOString();
+function computeNextRunISOString(intervalMinutes) {
+  return new Date(Date.now() + intervalMinutes * 60 * 1000).toISOString();
 }
 
 async function main() {
@@ -18,7 +18,7 @@ async function main() {
   const runner = createServiceRunner({ config, logger, dashboardState });
 
   logger.info('SERVIÇO EQUATORIAL AUTO INVOICE INICIADO');
-  logger.info(`Intervalo de verificação: ${runner.getIntervalHours()} hora(s)`);
+  logger.info(`Intervalo de verificação: ${runner.getIntervalMinutes()} minuto(s)`);
   logger.info(`Webhook de contas: ${config.webhookContasUrl || '(não configurado)'}`);
   logger.info(`Webhook de envio: ${config.webhookEnvioUrl || '(não configurado)'}`);
 
@@ -26,10 +26,10 @@ async function main() {
     status: 'IDLE',
     startTime: new Date().toISOString(),
     config: {
-      interval: runner.getIntervalHours(),
+      interval: runner.getIntervalMinutes(),
       webhook_contas: config.webhookContasUrl,
     },
-    nextRun: computeNextRunISOString(runner.getIntervalHours()),
+    nextRun: computeNextRunISOString(runner.getIntervalMinutes()),
   });
 
   const app = createApp({ config, logger, dashboardState, runner, downloadInvoice });

@@ -116,16 +116,16 @@ function initControls() {
     if (btnSaveConfig && intervalInput) {
         btnSaveConfig.addEventListener('click', async () => {
             try {
-                const intervalHours = Number.parseInt(intervalInput.value, 10);
-                if (!Number.isFinite(intervalHours) || intervalHours < 1 || intervalHours > 168) {
-                    alert('O intervalo deve ser entre 1 e 168 horas');
+                const intervalMinutes = Number.parseInt(intervalInput.value, 10);
+                if (!Number.isFinite(intervalMinutes) || intervalMinutes < 5 || intervalMinutes > 10080) {
+                    alert('O intervalo deve ser entre 5 e 10080 minutos');
                     return;
                 }
 
                 const res = await fetch('/api/config', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ intervalHours }),
+                    body: JSON.stringify({ intervalMinutes }),
                 });
 
                 const payload = await res.json().catch(() => ({}));

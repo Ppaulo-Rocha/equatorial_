@@ -1,4 +1,4 @@
-const { chromium } = require('playwright-extra');
+const { chromium, firefox } = require('playwright-extra');
 const stealth = require('puppeteer-extra-plugin-stealth')();
 const fs = require('fs');
 
@@ -49,11 +49,61 @@ async function processCompanyAccounts(empresa, email, senha, contas) {
         }
     };
 
-    try {
-        // Inicia o navegador UMA vez
-        browser = await chromium.launch({
-            headless: HEADLESS,
-            args: [
+    const getDashboardLocators = (page) => {
+        const invoiceLink = page.getByRole('link', { name: /Baixar segunda via completa/i });
+        const invoiceCardLink = page.locator('.card-segunda-via a').first();
+        const noInvoice = page.getByText(/N(?:ão|ao) existem faturas/i).first();
+        const nothingOwed = page.getByText(/Nada consta/i).first();
+        return { invoiceLink, invoiceCardLink, noInvoice, nothingOwed };
+    };
+
+    const detectDashboardOutcome = async (page) => {
+        const { invoiceLink, invoiceCardLink, noInvoice, nothingOwed } = getDashboardLocators(page);
+
+        if (await invoiceLink.isVisible({ timeout: 1000 }).catch(() => false)) return 'FATURA';
+        if (await invoiceCardLink.isVisible({ timeout: 1000 }).catch(() => false)) return 'FATURA';
+        if (await noInvoice.isVisible({ timeout: 1000 }).catch(() => false)) return 'SEM_FATURA';
+        if (await nothingOwed.isVisible({ timeout: 1000 }).catch(() => false)) return 'SEM_FATURA';
+
+        return null;
+    };
+
+    const waitForDashboardOutcome = async (page, timeoutMs) => {
+        const { invoiceLink, invoiceCardLink, noInvoice, nothingOwed } = getDashboardLocators(page);
+
+        try {
+            return await Promise.any([
+                invoiceLink.waitFor({ state: 'visible', timeout: timeoutMs }).then(() => 'FATURA'),
+                invoiceCardLink.waitFor({ state: 'visible', timeout: timeoutMs }).then(() => 'FATURA'),
+                noInvoice.waitFor({ state: 'visible', timeout: timeoutMs }).then(() => 'SEM_FATURA'),
+                nothingOwed.waitFor({ state: 'visible', timeout: timeoutMs }).then(() => 'SEM_FATURA')
+            ]);
+        } catch (e) {
+            throw new Error(`DASHBOARD_TIMEOUT_${timeoutMs}ms`);
+        }
+    };
+
+    const MAX_SESSION_RETRIES = 3;
+
+    for (let sessionAttempt = 1; sessionAttempt <= MAX_SESSION_RETRIES; sessionAttempt++) {
+        try {
+            // Lógica de Navegador: Chromium é o PRINCIPAL novamente
+            const useFirefox = sessionAttempt > 2; // Tenta Chromium nas duas primeiras, Firefox na terceira (fallback)
+            const browserType = useFirefox ? firefox : chromium;
+            const browserName = useFirefox ? 'Firefox' : 'Chromium';
+
+            if (sessionAttempt > 1) {
+                console.log(`\n🔄 Reiniciando sessão do navegador (Tentativa ${sessionAttempt}/${MAX_SESSION_RETRIES})...`);
+                console.log(`   💡 Alternando navegador para: ${browserName}`);
+                resultados.length = 0;
+                await sleep(5000);
+            } else {
+                console.log(`   🚀 Iniciando sessão com: ${browserName}`);
+            }
+
+            // Configuração de argumentos específica por navegador
+            const launchArgs = !useFirefox ? [
+                // Args Chromium (Otimizados para evitar detecção)
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
                 '--disable-blink-features=AutomationControlled',
@@ -63,233 +113,390 @@ async function processCompanyAccounts(empresa, email, senha, contas) {
                 '--disable-web-security',
                 '--disable-features=IsolateOrigins,site-per-process',
                 '--window-size=1366,768'
-            ]
-        });
+            ] : [
+                // Args Firefox
+                '--no-sandbox',
+                '--disable-setuid-sandbox'
+            ];
 
-        const context = await browser.newContext({
-            acceptDownloads: true,
-            userAgent: USER_AGENT,
-            viewport: { width: 1366, height: 768 },
-            locale: 'pt-BR',
-            timezoneId: 'America/Sao_Paulo',
-            ignoreHTTPSErrors: true,
-            extraHTTPHeaders: {
-                'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
-                'Accept-Encoding': 'gzip, deflate, br',
-                'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1'
-            }
-        });
+            // Inicia o navegador
+            browser = await browserType.launch({
+                headless: HEADLESS,
+                args: launchArgs
+            });
 
-        const page = await context.newPage();
-        // Aumentando timeout padrão para 2 minutos
-        page.setDefaultTimeout(120000);
+            const context = await browser.newContext({
+                acceptDownloads: true,
+                userAgent: USER_AGENT,
+                viewport: { width: 1366, height: 768 },
+                locale: 'pt-BR',
+                timezoneId: 'America/Sao_Paulo',
+                ignoreHTTPSErrors: true,
+                extraHTTPHeaders: {
+                    'Accept-Language': 'pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7',
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                    'Accept-Encoding': 'gzip, deflate, br',
+                    'Connection': 'keep-alive',
+                    'Upgrade-Insecure-Requests': '1'
+                }
+            });
 
-        // Injeta scripts anti-detecção
-        await page.addInitScript(() => {
-            Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-            Object.defineProperty(navigator, 'plugins', { get: () => [1, 2, 3, 4, 5] });
-            Object.defineProperty(navigator, 'languages', { get: () => ['pt-BR', 'pt', 'en-US', 'en'] });
-            window.chrome = { runtime: {} };
-        });
+            const page = await context.newPage();
+            // Aumentando timeout padrão para 2 minutos
+            page.setDefaultTimeout(120000);
 
-        // LOGIN (UMA VEZ)
-        console.log('🔐 Fazendo login...');
-        await retryAction(async () => {
-            await page.goto('https://agenciavirtual.equatorialenergia.com.br/Login/', {
-                waitUntil: 'networkidle',
-                timeout: 120000
-            })
-        }, 'Carregar página de login');
+            // Injeta scripts anti-detecção
+            // Injeta scripts anti-detecção AVANÇADOS
+            await page.addInitScript(() => {
+                // 1. Passar no teste de WebDriver
+                Object.defineProperty(navigator, 'webdriver', {
+                    get: () => undefined,
+                });
 
-        await sleep(2000);
+                // 2. Mock de Plugins (Chrome tem plugins, headless base não)
+                Object.defineProperty(navigator, 'plugins', {
+                    get: () => [1, 2, 3, 4, 5],
+                });
 
-        // Destrói popups
-        await page.addStyleTag({
-            content: `#pm__popup-21883, .pm__popup, .pm__overlay { display: none !important; }`
-        });
+                // 3. Mock de Languages
+                Object.defineProperty(navigator, 'languages', {
+                    get: () => ['pt-BR', 'pt', 'en-US', 'en'],
+                });
 
-        // Aceita cookies se aparecer
-        try {
-            const checkAviso = page.getByRole('checkbox', { name: 'Li e entendi o Aviso de' });
-            if (await checkAviso.isVisible({ timeout: 5000 })) {
-                await checkAviso.check();
-                await page.getByRole('button', { name: 'Enviar' }).click();
-                await sleep(1000);
-            }
-        } catch (e) { }
+                // 4. Mock de window.chrome
+                window.chrome = {
+                    runtime: {},
+                    loadTimes: function () { },
+                    csi: function () { },
+                    app: {}
+                };
 
-        // Passo 1: Clica em Entrar
-        await retryAction(async () => {
-            await page.getByRole('button', { name: 'Entrar' }).waitFor({ state: 'visible', timeout: 30000 });
-            await sleep(500);
-            await page.getByRole('button', { name: 'Entrar' }).click();
-        }, 'Clicar em Entrar iniciais');
-        await sleep(1500);
+                // 5. Mock de Permissions (Evita que notificações entreguem o automação)
+                const originalQuery = window.navigator.permissions.query;
+                window.navigator.permissions.query = (parameters) => (
+                    parameters.name === 'notifications' ?
+                        Promise.resolve({ state: Notification.permission }) :
+                        originalQuery(parameters)
+                );
+            });
 
-        // Passo 2: Preenche email
-        const inputIdentificacao = page.getByRole('textbox', { name: 'Identificação' });
-        await inputIdentificacao.waitFor({ state: 'visible', timeout: 30000 });
-        await inputIdentificacao.click();
-        await sleep(300);
-        await inputIdentificacao.type(email, { delay: 100 });
-        console.log('   ✓ Email preenchido');
-        await sleep(800);
+            // LOGIN (UMA VEZ)
+            console.log('🔐 Fazendo login...');
+            await retryAction(async () => {
+                await page.goto('https://agenciavirtual.equatorialenergia.com.br/Login/', {
+                    waitUntil: 'networkidle',
+                    timeout: 120000
+                })
+            }, 'Carregar página de login');
 
-        // Passo 3: Clica em Continuar (loop até senha aparecer)
-        let senhaVisivel = false;
-        // Tenta mais vezes o ciclo de continuar -> senha
-        for (let i = 1; i <= 5; i++) {
+            await sleep(2000);
+
+            // Destrói popups
+            await page.addStyleTag({
+                content: `#pm__popup-21883, .pm__popup, .pm__overlay { display: none !important; }`
+            });
+
+            // Aceita cookies se aparecer
             try {
-                const btnContinuar = page.getByRole('button', { name: 'Continuar' });
-                if (await btnContinuar.isVisible({ timeout: 5000 })) {
-                    await btnContinuar.click();
-                    console.log(`   ✓ Continuar clicado (${i})`);
-                    await sleep(2500); // Wait um pouco maior
-
-                    const inputSenha = page.getByRole('textbox', { name: 'Senha' });
-                    if (await inputSenha.isVisible({ timeout: 10000 })) {
-                        senhaVisivel = true;
-                        break;
-                    }
+                const checkAviso = page.getByRole('checkbox', { name: 'Li e entendi o Aviso de' });
+                if (await checkAviso.isVisible({ timeout: 5000 })) {
+                    await checkAviso.check();
+                    await page.getByRole('button', { name: 'Enviar' }).click();
+                    await sleep(1000);
                 }
             } catch (e) { }
-            await sleep(1000);
-        }
 
-        if (!senhaVisivel) {
-            // Tenta verificar se a senha já está visível por algum motivo
-            if (await page.getByRole('textbox', { name: 'Senha' }).isVisible({ timeout: 5000 })) {
-                senhaVisivel = true;
-            } else {
-                throw new Error('Campo de senha não apareceu após várias tentativas');
-            }
-        }
+            // Passo 1: Clica em Entrar
+            await retryAction(async () => {
+                await page.getByRole('button', { name: 'Entrar' }).waitFor({ state: 'visible', timeout: 30000 });
+                await sleep(500);
+                await page.getByRole('button', { name: 'Entrar' }).click();
+            }, 'Clicar em Entrar iniciais');
+            await sleep(1500);
 
-        // Passo 4: Preenche senha
-        const inputSenha = page.getByRole('textbox', { name: 'Senha' });
-        await inputSenha.click();
-        await sleep(300);
-        await inputSenha.type(senha, { delay: 100 });
-        console.log('   ✓ Senha preenchida');
-        await sleep(800);
+            // Passo 2: Preenche email
+            const inputIdentificacao = page.getByRole('textbox', { name: 'Identificação' });
+            await inputIdentificacao.waitFor({ state: 'visible', timeout: 30000 });
+            await inputIdentificacao.click();
+            await sleep(300);
+            await inputIdentificacao.type(email, { delay: 100 });
+            console.log('   ✓ Email preenchido');
+            await sleep(800);
 
-        // Passo 5: Entra
-        await retryAction(async () => {
-            await page.getByRole('button', { name: 'Entrar' }).click();
-            await page.waitForURL(/Home/, { timeout: 120000, waitUntil: 'domcontentloaded' });
-        }, 'Clicar botão Login final e carregar Home');
-
-        console.log('   ✓ Login realizado\n');
-        await sleep(2000);
-
-        // PROCESSA CADA CONTA NA MESMA SESSÃO
-        for (let i = 0; i < contas.length; i++) {
-            const { conta, id } = contas[i];
-            console.log(`[${i + 1}/${contas.length}] Processando conta: ${conta}`);
-
-            try {
-                // Se não é a primeira conta, vai para Home
-                if (i > 0) {
-                    console.log('   → Voltando ao Home...');
-                    await retryAction(async () => {
-                        await page.goto('https://agenciavirtual.equatorialenergia.com.br/Home/', { waitUntil: 'domcontentloaded', timeout: 60000 });
-                    }, 'Voltar para Home');
-                    await sleep(3000);
-                }
-
-                // Seleciona a conta
-                await retryAction(async () => {
-                    const inputConta = page.getByRole('textbox', { name: 'Digite aqui sua conta' });
-                    await inputConta.waitFor({ state: 'visible', timeout: 30000 });
-                    await inputConta.click();
-                    await sleep(300);
-                    await inputConta.fill(''); // Limpa
-                    await inputConta.type(conta, { delay: 150 });
-                }, 'Preencher campo de conta');
-
-                console.log(`   ✓ Conta digitada`);
-                await sleep(1500);
-
-                // Clica em Selecionar
-                await retryAction(async () => {
-                    await page.locator('div').filter({ hasText: /^Selecionar$/ }).first().click();
-                }, 'Clicar em Selecionar Conta');
-
-                console.log('   ✓ Selecionada (Aguardando carregamento...)');
-
-                // Aguarda carregamento de forma mais inteligente
-                // Tenta esperar algum elemento que indique sucesso ou o desaparecimento de loaders
+            // Passo 3: Clica em Continuar (loop até senha aparecer)
+            let senhaVisivel = false;
+            // Tenta mais vezes o ciclo de continuar -> senha
+            for (let i = 1; i <= 5; i++) {
                 try {
-                    // Estratégia mista: Espera um pouco garantido, e depois espera algo da home mudar
-                    // O site da equatorial costuma ter um delay grande aqui.
-                    await sleep(5000);
-                    await page.waitForLoadState('networkidle', { timeout: 30000 }).catch(() => { });
+                    const btnContinuar = page.getByRole('button', { name: 'Continuar' });
+                    if (await btnContinuar.isVisible({ timeout: 5000 })) {
+                        await btnContinuar.click();
+                        console.log(`   ✓ Continuar clicado (${i})`);
+                        await sleep(2500); // Wait um pouco maior
+
+                        const inputSenha = page.getByRole('textbox', { name: 'Senha' });
+                        if (await inputSenha.isVisible({ timeout: 10000 })) {
+                            senhaVisivel = true;
+                            break;
+                        }
+                    }
                 } catch (e) { }
+                await sleep(1000);
+            }
 
-                // Sleep de segurança ainda necessário devido a natureza do site, mas aumentado
-                await sleep(5000);
+            if (!senhaVisivel) {
+                // Tenta verificar se a senha já está visível por algum motivo
+                if (await page.getByRole('textbox', { name: 'Senha' }).isVisible({ timeout: 5000 })) {
+                    senhaVisivel = true;
+                } else {
+                    throw new Error('Campo de senha não apareceu após várias tentativas');
+                }
+            }
 
-                // Baixa fatura
-                console.log('   → Tentando baixar fatura...');
+            // Passo 4: Preenche senha
+            const inputSenha = page.getByRole('textbox', { name: 'Senha' });
+            await inputSenha.click();
+            await sleep(300);
+            await inputSenha.type(senha, { delay: 100 });
+            console.log('   ✓ Senha preenchida');
+            await sleep(800);
 
-                const finalBase64 = await retryAction(async () => {
-                    const downloadPromise = page.waitForEvent('download', { timeout: 120000 });
+            // Passo 5: Entra
+            await retryAction(async () => {
+                await page.getByRole('button', { name: 'Entrar' }).click();
+                await page.waitForURL(/Home/, { timeout: 120000, waitUntil: 'domcontentloaded' });
+            }, 'Clicar botão Login final e carregar Home');
 
-                    // Tenta encontrar o botão de várias formas
-                    const btnBaixar = page.getByRole('link', { name: 'Baixar segunda via completa' });
-                    if (await btnBaixar.isVisible({ timeout: 5000 })) {
-                        await btnBaixar.click();
-                    } else {
-                        // Fallback selector se o texto mudar ou for diferente
-                        await page.locator('.card-segunda-via a').first().click();
+            console.log('   ✓ Login realizado\n');
+            await sleep(2000);
+
+            // PROCESSA CADA CONTA NA MESMA SESSÃO
+            for (let i = 0; i < contas.length; i++) {
+                const { conta, id } = contas[i];
+                console.log(`[${i + 1}/${contas.length}] Processando conta: ${conta}`);
+
+                try {
+                    // Se não é a primeira conta, vai para Home
+                    if (i > 0) {
+                        console.log('   → Voltando ao Home...');
+                        await retryAction(async () => {
+                            await page.goto('https://agenciavirtual.equatorialenergia.com.br/Home/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+                        }, 'Voltar para Home');
+                        await sleep(3000);
                     }
 
-                    const download = await downloadPromise;
-                    const downloadPath = await download.path();
-                    const pdfBuffer = fs.readFileSync(downloadPath);
-                    try { fs.unlinkSync(downloadPath); } catch (e) { }
-                    return pdfBuffer.toString('base64');
-                }, 'Processo de Download da Fatura', 2);
+                    // Seleciona a conta
+                    await retryAction(async () => {
+                        const inputConta = page.getByRole('textbox', { name: 'Digite aqui sua conta' });
+                        await inputConta.waitFor({ state: 'visible', timeout: 30000 });
+                        await inputConta.click();
+                        await sleep(300);
+                        await inputConta.fill(''); // Limpa
+                        await inputConta.type(conta, { delay: 150 });
+                    }, 'Preencher campo de conta');
 
-                console.log(`   ✓ Fatura baixada (${(finalBase64.length / 1024).toFixed(1)} KB)\n`);
+                    console.log(`   ✓ Conta digitada`);
+                    await sleep(1500);
 
-                resultados.push({
-                    success: true,
-                    conta,
-                    id,
-                    filename: `fatura_${conta}.pdf`,
-                    file_base64: finalBase64
-                });
+                    // Seleciona a conta e aguarda carregamento do dashboard
+                    const selecaoResultado = await retryAction(async () => {
+                        const alreadyOutcome = await detectDashboardOutcome(page);
+                        if (alreadyOutcome) {
+                            console.log('      ✓ Dashboard já identificado (autoseleção ou cache), pulando clique de seleção.');
+                            return alreadyOutcome;
+                        }
 
-            } catch (error) {
-                console.error(`   ✗ Erro: ${error.message}\n`);
-                resultados.push({
-                    success: false,
-                    conta,
-                    id,
-                    error: error.message
-                });
+                        // Espera o card da conta aparecer (após o filtro)
+                        let contaText = page
+                            .getByText(new RegExp(`Conta\\s+contrato\\s*${String(conta)}`, 'i'))
+                            .first();
+                        try {
+                            await contaText.waitFor({ state: 'visible', timeout: 15000 });
+                        } catch (e) {
+                            contaText = page.getByText(String(conta)).first();
+                            await contaText.waitFor({ state: 'visible', timeout: 15000 });
+                        }
+
+                        // Clica em Selecionar (ancorado no card da conta)
+                        const contaCard = contaText.locator('xpath=ancestor-or-self::*[.//text()[contains(., \"Selecionar\")]][1]');
+                        const btnSelecionar = contaCard
+                            .getByRole('link', { name: /Selecionar/i })
+                            .or(contaCard.getByRole('button', { name: /Selecionar/i }))
+                            .or(contaCard.getByText(/Selecionar/i))
+                            .first();
+                        const btnSelecionarXPath = page.locator(
+                            'xpath=/html/body/div[7]/div/div/div[2]/div/div/div[2]/div/div/div[1]/div/div/div[2]/div[5]/div[1]/div[2]/div/div/div/div[5]',
+                        );
+
+                        await btnSelecionar.waitFor({ state: 'visible', timeout: 10000 });
+                        await btnSelecionar.scrollIntoViewIfNeeded();
+                        await sleep(500);
+
+                        const TOTAL_WAIT_MS = 35000;
+                        const startedAt = Date.now();
+                        const clickStrategies = [
+                            { label: 'clique padrao', run: () => btnSelecionar.click({ timeout: 10000 }) },
+                            { label: 'clique forcado', run: () => btnSelecionar.click({ timeout: 10000, force: true }) },
+                            {
+                                label: 'XPath absoluto',
+                                run: async () => {
+                                    await btnSelecionarXPath.waitFor({ state: 'visible', timeout: 5000 });
+                                    await btnSelecionarXPath.scrollIntoViewIfNeeded();
+                                    await btnSelecionarXPath.click({ timeout: 10000 });
+                                }
+                            },
+                            {
+                                label: 'XPath absoluto (mouse no canto direito)',
+                                run: async () => {
+                                    await btnSelecionarXPath.waitFor({ state: 'visible', timeout: 5000 });
+                                    await btnSelecionarXPath.scrollIntoViewIfNeeded();
+                                    const box = await btnSelecionarXPath.boundingBox();
+                                    if (!box) throw new Error('NO_BOUNDING_BOX_XPATH');
+                                    await page.mouse.click(box.x + box.width - 8, box.y + box.height / 2);
+                                }
+                            },
+                            { label: 'DOM click()', run: () => btnSelecionar.evaluate((el) => el.click()) },
+                            {
+                                label: 'Enter no botao',
+                                run: async () => {
+                                    await btnSelecionar.focus();
+                                    await page.keyboard.press('Enter');
+                                }
+                            },
+                            { label: 'duplo clique', run: () => btnSelecionar.dblclick({ timeout: 10000 }) },
+                            { label: 'clique no card', run: () => contaCard.click({ timeout: 10000, force: true }) }
+                        ];
+
+                        for (let attempt = 0; attempt < clickStrategies.length; attempt++) {
+                            const remainingMs = TOTAL_WAIT_MS - (Date.now() - startedAt);
+                            if (remainingMs <= 0) break;
+
+                            const outcomeBefore = await detectDashboardOutcome(page);
+                            if (outcomeBefore) return outcomeBefore;
+
+                            if (attempt > 0) {
+                                console.log(`      → Dashboard não carregou, tentando fallback de clique: ${clickStrategies[attempt].label}`);
+                            }
+
+                            try {
+                                await clickStrategies[attempt].run();
+                            } catch (e) {
+                                // tenta próxima estratégia
+                            }
+
+                            console.log('      → Aguardando dashboard de fatura...');
+                            try {
+                                const waitMs = Math.min(15000, remainingMs);
+                                return await waitForDashboardOutcome(page, waitMs);
+                            } catch (e) {
+                                await sleep(600);
+                            }
+                        }
+
+                        throw new Error(`DASHBOARD_TIMEOUT_${TOTAL_WAIT_MS}ms`);
+                    }, 'Selecionar conta e carregar dashboard', 3);
+
+                    if (selecaoResultado === 'SEM_FATURA') {
+                        console.log(`   ℹ️  Sem faturas pendentes para esta conta.\n`);
+                        resultados.push({
+                            success: true,
+                            conta,
+                            id,
+                            info: 'Sem faturas pendentes'
+                        });
+                        continue;
+                    }
+
+                    console.log('   ✓ Dashboard carregado');
+                    await sleep(2000);
+
+                    // Baixa fatura
+                    console.log('   → Tentando baixar fatura...');
+
+                    const finalBase64 = await retryAction(async () => {
+                        const downloadPromise = page.waitForEvent('download', { timeout: 120000 });
+
+                        // Tenta encontrar o botão de várias formas
+                        const btnBaixar = page.getByRole('link', { name: 'Baixar segunda via completa' });
+                        if (await btnBaixar.isVisible({ timeout: 5000 })) {
+                            await btnBaixar.click();
+                        } else {
+                            // Fallback selector se o texto mudar ou for diferente
+                            await page.locator('.card-segunda-via a').first().click();
+                        }
+
+                        const download = await downloadPromise;
+                        const downloadPath = await download.path();
+                        const pdfBuffer = fs.readFileSync(downloadPath);
+                        try { fs.unlinkSync(downloadPath); } catch (e) { }
+                        return pdfBuffer.toString('base64');
+                    }, 'Processo de Download da Fatura', 2);
+
+                    console.log(`   ✓ Fatura baixada (${(finalBase64.length / 1024).toFixed(1)} KB)\n`);
+
+                    resultados.push({
+                        success: true,
+                        conta,
+                        id,
+                        filename: `fatura_${conta}.pdf`,
+                        file_base64: finalBase64
+                    });
+
+                } catch (error) {
+                    // Captura Screenshot do erro
+                    try {
+                        const screenshotsDir = './screenshots';
+                        if (!fs.existsSync(screenshotsDir)) fs.mkdirSync(screenshotsDir);
+                        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+                        const screenshotPath = `${screenshotsDir}/erro_${conta}_${timestamp}.png`;
+                        await page.screenshot({ path: screenshotPath, fullPage: true });
+                        console.log(`      📸 Screenshot salvo: ${screenshotPath}`);
+                    } catch (e) {
+                        console.log('      ⚠️ Falha ao tirar screenshot:', e.message);
+                    }
+
+                    if (error.message.includes('SEM_FATURA_PENDENTE')) {
+                        console.log(`   ℹ️  Sem faturas pendentes para esta conta.\n`);
+                        resultados.push({
+                            success: true, // Consideramos sucesso pois processou corretamente
+                            conta,
+                            id,
+                            info: 'Sem faturas pendentes'
+                        });
+                    } else {
+                        console.error(`   ✗ Erro: ${error.message}\n`);
+                        resultados.push({
+                            success: false,
+                            conta,
+                            id,
+                            error: error.message
+                        });
+                    }
+                }
             }
-        }
 
-        await context.close();
-        await browser.close();
+            await context.close();
+            await browser.close();
 
-    } catch (error) {
-        console.error(`\n✗ Erro fatal no processamento da empresa ${empresa}: ${error.message}`);
-        if (browser) await browser.close().catch(() => { });
+            // Se chegou aqui, sucesso
+            break;
 
-        // Marca todas as contas não processadas como erro
-        for (const conta of contas) {
-            if (!resultados.find(r => r.conta === conta.conta)) {
-                resultados.push({
-                    success: false,
-                    conta: conta.conta,
-                    id: conta.id,
-                    error: `Erro no login/processamento: ${error.message}`
-                });
+        } catch (error) {
+            console.error(`\n✗ Erro fatal no processamento da empresa ${empresa} (Tentativa ${sessionAttempt}): ${error.message}`);
+            if (browser) await browser.close().catch(() => { });
+
+            if (sessionAttempt === MAX_SESSION_RETRIES) {
+                // Marca todas as contas não processadas como erro
+                for (const conta of contas) {
+                    if (!resultados.find(r => r.conta === conta.conta)) {
+                        resultados.push({
+                            success: false,
+                            conta: conta.conta,
+                            id: conta.id,
+                            error: `Erro no login/processamento: ${error.message}`
+                        });
+                    }
+                }
             }
         }
     }
