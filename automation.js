@@ -65,22 +65,38 @@ async function processCompanyAccounts(empresa, email, senha, contas) {
         if (await noInvoice.isVisible({ timeout: 1000 }).catch(() => false)) return 'SEM_FATURA';
         if (await nothingOwed.isVisible({ timeout: 1000 }).catch(() => false)) return 'SEM_FATURA';
 
+        // Detecta dashboard genérico (sem card de fatura) para não insistir
+        try {
+            const crumbDashboard = page.getByText(/\bDashboard\b/i).first();
+            const acessoRapido = page.getByRole('heading', { name: /Acesso r[páa]pido/i }).first();
+            const quickTile = page.getByText(/Informar falta de luz/i).first();
+            const inDashboard = await Promise.all([
+                crumbDashboard.isVisible({ timeout: 2000 }).catch(() => false),
+                acessoRapido.isVisible({ timeout: 2000 }).catch(() => false),
+                quickTile.isVisible({ timeout: 2000 }).catch(() => false)
+            ]);
+            const dashConfidence = inDashboard.filter(Boolean).length >= 2;
+            if (dashConfidence) {
+                const hasInvoiceLink = await invoiceLink.isVisible({ timeout: 800 }).catch(() => false);
+                const hasInvoiceCard = await invoiceCardLink.isVisible({ timeout: 800 }).catch(() => false);
+                if (!hasInvoiceLink && !hasInvoiceCard) return 'SEM_FATURA';
+            }
+        } catch (e) { }
+
         return null;
     };
 
     const waitForDashboardOutcome = async (page, timeoutMs) => {
-        const { invoiceLink, invoiceCardLink, noInvoice, nothingOwed } = getDashboardLocators(page);
-
-        try {
-            return await Promise.any([
-                invoiceLink.waitFor({ state: 'visible', timeout: timeoutMs }).then(() => 'FATURA'),
-                invoiceCardLink.waitFor({ state: 'visible', timeout: timeoutMs }).then(() => 'FATURA'),
-                noInvoice.waitFor({ state: 'visible', timeout: timeoutMs }).then(() => 'SEM_FATURA'),
-                nothingOwed.waitFor({ state: 'visible', timeout: timeoutMs }).then(() => 'SEM_FATURA')
-            ]);
-        } catch (e) {
-            throw new Error(`DASHBOARD_TIMEOUT_${timeoutMs}ms`);
+        const started = Date.now();
+        while (Date.now() - started < timeoutMs) {
+            const outcome = await detectDashboardOutcome(page);
+            if (outcome) return outcome;
+            await sleep(500);
         }
+        // Última checagem antes de desistir
+        const finalOutcome = await detectDashboardOutcome(page);
+        if (finalOutcome) return finalOutcome;
+        throw new Error(`DASHBOARD_TIMEOUT_${timeoutMs}ms`);
     };
 
     const MAX_SESSION_RETRIES = 3;
@@ -144,6 +160,27 @@ async function processCompanyAccounts(empresa, email, senha, contas) {
             const page = await context.newPage();
             // Aumentando timeout padrão para 2 minutos
             page.setDefaultTimeout(120000);
+
+            // Mantém um rastro curto de rede para diagnóstico (somente usado em falhas)
+            const networkTrace = [];
+            const pushNetworkTrace = (entry) => {
+                networkTrace.push(entry);
+                if (networkTrace.length > 80) networkTrace.shift();
+            };
+            page.on('request', (req) => {
+                try {
+                    const rt = req.resourceType();
+                    if (!['xhr', 'fetch', 'document'].includes(rt)) return;
+                    pushNetworkTrace({ t: Date.now(), type: 'REQ', rt, method: req.method(), url: req.url() });
+                } catch (e) { }
+            });
+            page.on('response', (res) => {
+                try {
+                    const url = res.url();
+                    if (!url) return;
+                    pushNetworkTrace({ t: Date.now(), type: 'RES', status: res.status(), url });
+                } catch (e) { }
+            });
 
             // Injeta scripts anti-detecção
             // Injeta scripts anti-detecção AVANÇADOS
@@ -293,13 +330,38 @@ async function processCompanyAccounts(empresa, email, senha, contas) {
                         await sleep(300);
                         await inputConta.fill(''); // Limpa
                         await inputConta.type(conta, { delay: 150 });
+                        // Alguns fluxos só aplicam o filtro no Enter/blur
+                        try { await inputConta.press('Enter', { timeout: 2000 }); } catch (e) { }
+                        try { await inputConta.evaluate((el) => el.blur()); } catch (e) { }
                     }, 'Preencher campo de conta');
 
                     console.log(`   ✓ Conta digitada`);
                     await sleep(1500);
 
                     // Seleciona a conta e aguarda carregamento do dashboard
+                    let selecaoTentativa = 0;
                     const selecaoResultado = await retryAction(async () => {
+                        selecaoTentativa++;
+                        if (selecaoTentativa > 1) {
+                            console.log('      → Recarregando Home para nova tentativa de seleção...');
+                            await page.goto('https://agenciavirtual.equatorialenergia.com.br/Home/', { waitUntil: 'domcontentloaded', timeout: 60000 });
+                            await sleep(2500);
+
+                            // Reaplica o filtro da conta após recarregar
+                            try {
+                                const inputConta = page.getByRole('textbox', { name: 'Digite aqui sua conta' });
+                                await inputConta.waitFor({ state: 'visible', timeout: 30000 });
+                                await inputConta.click();
+                                await sleep(200);
+                                await inputConta.fill('');
+                                await inputConta.type(conta, { delay: 150 });
+                                try { await inputConta.press('Enter', { timeout: 2000 }); } catch (e) { }
+                                try { await inputConta.evaluate((el) => el.blur()); } catch (e) { }
+                            } catch (e) { }
+
+                            await sleep(1500);
+                        }
+
                         const alreadyOutcome = await detectDashboardOutcome(page);
                         if (alreadyOutcome) {
                             console.log('      ✓ Dashboard já identificado (autoseleção ou cache), pulando clique de seleção.');
@@ -319,30 +381,114 @@ async function processCompanyAccounts(empresa, email, senha, contas) {
 
                         // Clica em Selecionar (ancorado no card da conta)
                         const contaCard = contaText.locator('xpath=ancestor-or-self::*[.//text()[contains(., \"Selecionar\")]][1]');
-                        const btnSelecionar = contaCard
-                            .getByRole('link', { name: /Selecionar/i })
-                            .or(contaCard.getByRole('button', { name: /Selecionar/i }))
-                            .or(contaCard.getByText(/Selecionar/i))
-                            .first();
-                        const btnSelecionarXPath = page.locator(
+                        const anchorSelecionar = contaCard.locator('a:has-text("Selecionar")');
+                        const buttonSelecionar = contaCard.locator('button:has-text("Selecionar")');
+                        let btnSelecionar = anchorSelecionar;
+                        if (!(await anchorSelecionar.first().isVisible({ timeout: 2000 }).catch(() => false))) {
+                            if (await buttonSelecionar.first().isVisible({ timeout: 2000 }).catch(() => false)) {
+                                btnSelecionar = buttonSelecionar;
+                            } else {
+                                btnSelecionar = contaCard.getByRole('link', { name: /Selecionar/i })
+                                    .or(contaCard.getByRole('button', { name: /Selecionar/i }))
+                                    .or(contaCard.getByText(/Selecionar/i))
+                                    .first();
+                            }
+                        }
+
+                        // Garante que, mesmo que o locator seja um <span>, usamos o ancestral clicável
+                        const btnCliquePreferencial = btnSelecionar
+                            .locator('xpath=ancestor::a[1]')
+                            .first()
+                            .or(btnSelecionar.locator('xpath=ancestor::button[1]').first())
+                            .or(btnSelecionar);
+
+                        const btnSelecionarXPathBase = page.locator(
                             'xpath=/html/body/div[7]/div/div/div[2]/div/div/div[2]/div/div/div[1]/div/div/div[2]/div[5]/div[1]/div[2]/div/div/div/div[5]',
                         );
+                        const btnSelecionarXPath = btnSelecionarXPathBase
+                            .locator('a,button')
+                            .filter({ hasText: /Selecionar/i })
+                            .first()
+                            .or(btnSelecionarXPathBase);
 
-                        await btnSelecionar.waitFor({ state: 'visible', timeout: 10000 });
-                        await btnSelecionar.scrollIntoViewIfNeeded();
+                        try {
+                            await btnCliquePreferencial.waitFor({ state: 'visible', timeout: 15000 });
+                        } catch (e) {
+                            const outcomeOnMissingButton = await detectDashboardOutcome(page);
+                            if (outcomeOnMissingButton) return outcomeOnMissingButton;
+                            // Se não achou o botão de selecionar em 15s, assume sem fatura e pula
+                            throw new Error('SEM_FATURA_PENDENTE');
+                        }
+
+                        await btnCliquePreferencial.scrollIntoViewIfNeeded();
+                        try {
+                            const handle = await btnCliquePreferencial.elementHandle();
+                            if (handle) await handle.waitForElementState('stable', { timeout: 5000 });
+                        } catch (e) { }
                         await sleep(500);
 
-                        const TOTAL_WAIT_MS = 35000;
+                        const TOTAL_WAIT_MS = 90000;
                         const startedAt = Date.now();
+
+                        const clickAtRightEdge = async (locator, label) => {
+                            const box = await locator.boundingBox();
+                            if (!box) throw new Error(`NO_BOUNDING_BOX_${label}`);
+                            await page.mouse.click(box.x + box.width - 6, box.y + box.height / 2, { delay: 140 });
+                        };
+
+                        const getSelecionarHref = async () => {
+                            try {
+                                const href = await btnCliquePreferencial.evaluate((el) => {
+                                    const maybeAnchor = el.closest('a');
+                                    if (maybeAnchor && maybeAnchor.href) return maybeAnchor.href;
+                                    // fallback para elementos que armazenam link em atributo
+                                    const attr = el.getAttribute('href') || el.getAttribute('data-href');
+                                    return attr || '';
+                                });
+                                return href ? String(href).trim() : '';
+                            } catch (e) {
+                                return '';
+                            }
+                        };
+
                         const clickStrategies = [
-                            { label: 'clique padrao', run: () => btnSelecionar.click({ timeout: 10000 }) },
-                            { label: 'clique forcado', run: () => btnSelecionar.click({ timeout: 10000, force: true }) },
+                            { label: 'clique padrao (delay)', run: () => btnCliquePreferencial.click({ timeout: 10000, delay: 140 }) },
+                            { label: 'hover + clique', run: async () => { await btnCliquePreferencial.hover({ timeout: 10000 }); await sleep(250); await btnCliquePreferencial.click({ timeout: 10000, delay: 140 }); } },
+                            { label: 'mouse no canto direito', run: () => clickAtRightEdge(btnCliquePreferencial, 'BTN') },
+                            { label: 'ativar card + clique', run: async () => { await contaCard.click({ timeout: 10000 }); await sleep(300); await btnCliquePreferencial.click({ timeout: 10000, delay: 140 }); } },
+                            { label: 'clique forcado', run: () => btnCliquePreferencial.click({ timeout: 10000, force: true, delay: 140 }) },
                             {
-                                label: 'XPath absoluto',
+                                label: 'dispatch eventos (pointer/mouse)',
+                                run: () => btnCliquePreferencial.evaluate((el) => {
+                                    const evtOpts = { bubbles: true, cancelable: true, view: window };
+                                    el.dispatchEvent(new PointerEvent('pointerdown', evtOpts));
+                                    el.dispatchEvent(new MouseEvent('mousedown', evtOpts));
+                                    el.dispatchEvent(new PointerEvent('pointerup', evtOpts));
+                                    el.dispatchEvent(new MouseEvent('mouseup', evtOpts));
+                                    el.click();
+                                })
+                            },
+                            {
+                                label: 'click via querySelector no card',
+                                run: () => contaCard.evaluate((card) => {
+                                    const target = card.querySelector('a:has-text("Selecionar"), button:has-text("Selecionar")') ||
+                                        Array.from(card.querySelectorAll('a,button,span,div')).find((n) => /selecionar/i.test(n.textContent || ''));
+                                    if (target) {
+                                        const evtOpts = { bubbles: true, cancelable: true, view: window };
+                                        target.dispatchEvent(new PointerEvent('pointerdown', evtOpts));
+                                        target.dispatchEvent(new MouseEvent('mousedown', evtOpts));
+                                        target.dispatchEvent(new PointerEvent('pointerup', evtOpts));
+                                        target.dispatchEvent(new MouseEvent('mouseup', evtOpts));
+                                        target.click();
+                                    }
+                                })
+                            },
+                            {
+                                label: 'XPath absoluto (click)',
                                 run: async () => {
                                     await btnSelecionarXPath.waitFor({ state: 'visible', timeout: 5000 });
                                     await btnSelecionarXPath.scrollIntoViewIfNeeded();
-                                    await btnSelecionarXPath.click({ timeout: 10000 });
+                                    await btnSelecionarXPath.click({ timeout: 10000, delay: 140 });
                                 }
                             },
                             {
@@ -350,21 +496,30 @@ async function processCompanyAccounts(empresa, email, senha, contas) {
                                 run: async () => {
                                     await btnSelecionarXPath.waitFor({ state: 'visible', timeout: 5000 });
                                     await btnSelecionarXPath.scrollIntoViewIfNeeded();
-                                    const box = await btnSelecionarXPath.boundingBox();
-                                    if (!box) throw new Error('NO_BOUNDING_BOX_XPATH');
-                                    await page.mouse.click(box.x + box.width - 8, box.y + box.height / 2);
+                                    await clickAtRightEdge(btnSelecionarXPath, 'XPATH');
                                 }
                             },
-                            { label: 'DOM click()', run: () => btnSelecionar.evaluate((el) => el.click()) },
+                            { label: 'DOM click()', run: () => btnCliquePreferencial.evaluate((el) => el.click()) },
                             {
                                 label: 'Enter no botao',
                                 run: async () => {
-                                    await btnSelecionar.focus();
+                                    await btnCliquePreferencial.focus();
                                     await page.keyboard.press('Enter');
                                 }
                             },
-                            { label: 'duplo clique', run: () => btnSelecionar.dblclick({ timeout: 10000 }) },
-                            { label: 'clique no card', run: () => contaCard.click({ timeout: 10000, force: true }) }
+                            { label: 'duplo clique', run: () => btnCliquePreferencial.dblclick({ timeout: 10000 }) },
+                            { label: 'clique no card', run: () => contaCard.click({ timeout: 10000, force: true }) },
+                            {
+                                label: 'abrir via href (goto)',
+                                run: async () => {
+                                    const href = await getSelecionarHref();
+                                    if (!href || href === '#' || href.startsWith('javascript:')) {
+                                        throw new Error('SEM_HREF_SELECIONAR');
+                                    }
+                                    const targetUrl = href.startsWith('http') ? href : new URL(href, page.url()).toString();
+                                    await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
+                                }
+                            }
                         ];
 
                         for (let attempt = 0; attempt < clickStrategies.length; attempt++) {
@@ -378,20 +533,98 @@ async function processCompanyAccounts(empresa, email, senha, contas) {
                                 console.log(`      → Dashboard não carregou, tentando fallback de clique: ${clickStrategies[attempt].label}`);
                             }
 
+                            let clicked = false;
                             try {
                                 await clickStrategies[attempt].run();
+                                clicked = true;
                             } catch (e) {
-                                // tenta próxima estratégia
+                                const msg = (e && e.message) ? e.message : String(e);
+                                console.log(`      → Falha no clique (${clickStrategies[attempt].label}): ${msg}`);
+                                await sleep(250);
+                                continue;
                             }
+
+                            if (!clicked) continue;
 
                             console.log('      → Aguardando dashboard de fatura...');
                             try {
-                                const waitMs = Math.min(15000, remainingMs);
+                                const waitMs = Math.min(25000, remainingMs);
                                 return await waitForDashboardOutcome(page, waitMs);
                             } catch (e) {
                                 await sleep(600);
                             }
                         }
+
+                        // Se não clicou em nada mas já identificou dashboard sem fatura, retorna
+                        const outcomeAfterLoop = await detectDashboardOutcome(page);
+                        if (outcomeAfterLoop) return outcomeAfterLoop;
+
+                        // Debug: entender por que o clique não dispara (somente quando falha)
+                        try {
+                            const urlAtual = page.url();
+                            let btnInfo = null;
+                            try {
+                                btnInfo = await btnCliquePreferencial.evaluate((el) => {
+                                    const anchor = el.closest('a');
+                                    const href = (anchor && anchor.href) ? anchor.href : (el.getAttribute('href') || el.getAttribute('data-href') || '');
+                                    return {
+                                        tag: el.tagName,
+                                        href,
+                                        text: (el.textContent || '').trim().slice(0, 80),
+                                        className: (el.className || '').toString().slice(0, 120),
+                                        ariaDisabled: el.getAttribute('aria-disabled') || '',
+                                        disabledAttr: el.getAttribute('disabled') || ''
+                                    };
+                                });
+                            } catch (e) { }
+
+                            let hitTest = null;
+                            try {
+                                const box = await btnSelecionar.boundingBox();
+                                if (box) {
+                                    hitTest = await page.evaluate(({ x, y }) => {
+                                        const el = document.elementFromPoint(x, y);
+                                        if (!el) return null;
+                                        return {
+                                            tag: el.tagName,
+                                            className: (el.className || '').toString().slice(0, 120),
+                                            text: (el.textContent || '').trim().slice(0, 80)
+                                        };
+                                    }, { x: box.x + box.width / 2, y: box.y + box.height / 2 });
+                                }
+                            } catch (e) { }
+
+                            console.log(`      → Diagnóstico: url=${urlAtual}`);
+                            if (btnInfo) {
+                                console.log(`      → Diagnóstico: selecionar=${btnInfo.tag} href=${btnInfo.href || '(vazio)'} aria-disabled=${btnInfo.ariaDisabled || '(vazio)'}`);
+                            }
+                            if (hitTest) {
+                                console.log(`      → Diagnóstico: elementFromPoint=${hitTest.tag} class=${hitTest.className || '(vazio)'}`);
+                            }
+
+                            try {
+                                const outer = await contaCard.evaluate((el) => (el.outerHTML || '').slice(0, 900));
+                                if (outer) console.log(`      → Diagnóstico: contaCard HTML=${outer}`);
+                            } catch (e) { }
+
+                            try {
+                                const recentNet = networkTrace
+                                    .filter((e) => e && typeof e.t === 'number' && e.t >= startedAt - 1000)
+                                    .slice(-20);
+                                if (recentNet.length === 0) {
+                                    console.log('      → Diagnóstico: rede=nenhuma requisição recente');
+                                } else {
+                                    console.log(`      → Diagnóstico: rede (últimos ${recentNet.length})`);
+                                    for (const entry of recentNet) {
+                                        if (entry.type === 'REQ') {
+                                            console.log(`         - REQ ${entry.method} (${entry.rt}) ${entry.url}`);
+                                        } else if (entry.type === 'RES') {
+                                            console.log(`         - RES ${entry.status} ${entry.url}`);
+                                        }
+                                    }
+                                }
+                            } catch (e) { }
+                        } catch (e) { }
 
                         throw new Error(`DASHBOARD_TIMEOUT_${TOTAL_WAIT_MS}ms`);
                     }, 'Selecionar conta e carregar dashboard', 3);
